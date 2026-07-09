@@ -21,6 +21,7 @@ writes directly, used to drain the pending-writes queue.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -107,6 +108,25 @@ def stage_gnupg() -> str:
     return str(dest)
 
 
+def restart_helper(script: str, pidfile_name: str) -> None:
+    """Soft-restart a background helper so edits to it take effect on launch.
+
+    The helpers guard themselves with a PID file, so a plain relaunch would exit
+    as a redundant instance and keep the old code running. SIGTERM the old
+    instance first, then start a fresh one.
+    """
+    pidfile = APP_DIR / pidfile_name
+    try:
+        os.kill(int(pidfile.read_text().strip()), signal.SIGTERM)
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        pass
+    pidfile.unlink(missing_ok=True)
+    subprocess.Popen(
+        [sys.executable, str(SCRIPT_DIR / script)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+
+
 def read_keychain_api_key() -> bytes:
     """Read the Claude Code API key from the macOS login Keychain."""
     try:
@@ -164,11 +184,10 @@ def main() -> None:
         gh_config_src = write_mode_gh_config()
     else:
         mint_gh_token.mint()
-        for helper in ("token_refresher.py", "pending_writes_watcher.py"):
-            subprocess.Popen(
-                [sys.executable, str(SCRIPT_DIR / helper)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-            )
+        # Soft-restart the helpers so edits to them take effect on this launch (a
+        # plain relaunch would exit via the PID guard, leaving the old code running).
+        restart_helper("token_refresher.py", "token-refresher.pid")
+        restart_helper("pending_writes_watcher.py", "pending-writes-watcher.pid")
         gh_config_src = str(APP_DIR / "gh")
 
     git_helper = (
