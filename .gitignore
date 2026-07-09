@@ -1,5 +1,6 @@
-# GitHub App private key used by docker/claude-docker.py — never commit
-/ro-token.pem
-
 # Python bytecode cache
 __pycache__/
+
+# Generated PR reports
+/daily.txt
+/report.txt

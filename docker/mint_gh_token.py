@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Mint a short-lived, read-only GitHub App installation token and write it
-where the containers read it:
+where the containers read it, under ~/.config/claude-toolkit/gh/:
 
-  * ~/.claude/.docker-gh-token  -- raw token, for git's credential helper
-  * ~/.claude/gh/hosts.yml      -- gh config, so `gh` uses it with no GH_TOKEN
+  * token      -- raw token, for git's credential helper
+  * hosts.yml  -- gh config, so `gh` uses it with no GH_TOKEN
 
-Runs on the HOST (it needs the App private key). Both outputs live under the
-mounted ~/.claude, so every container sees the current token. Installation
-tokens live ~1 h, so token_refresher.py calls mint() periodically; this file is
-also runnable directly for the initial synchronous mint at launch.
+Runs on the HOST (it needs the App private key). The gh dir is mounted into the
+container at gh's default config location, so every container sees the current
+token. Installation tokens live ~1 h, so token_refresher.py calls mint()
+periodically; this file is also runnable directly for the initial synchronous
+mint at launch.
 """
 
 import base64
@@ -20,13 +21,12 @@ import urllib.request
 from pathlib import Path
 
 GH_APP_ID = os.environ.get("GH_APP_ID", "4250913")
-_SCRIPT_DIR = Path(__file__).resolve().parent
-GH_APP_PEM = Path(os.environ.get("GH_APP_PEM", _SCRIPT_DIR.parent / "ro-token.pem"))
+APP_DIR = Path(os.path.expanduser("~/.config/claude-toolkit"))
+GH_APP_PEM = Path(os.environ.get("GH_APP_PEM", APP_DIR / "ro-token.pem"))
 
-CLAUDE_DIR = Path(os.path.expanduser("~/.claude"))
-TOKEN_FILE = CLAUDE_DIR / ".docker-gh-token"
-GH_CONFIG_DIR = CLAUDE_DIR / "gh"
+GH_CONFIG_DIR = APP_DIR / "gh"
 HOSTS_YML = GH_CONFIG_DIR / "hosts.yml"
+TOKEN_FILE = GH_CONFIG_DIR / "token"
 
 API = "https://api.github.com"
 

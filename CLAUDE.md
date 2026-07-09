@@ -2,7 +2,7 @@
 
 ## Read-Only Mode
 
-See [read-only-docker.md](read-only-docker.md) for read-only Docker session behavior (the pending-writes hand-off queue, its format, and how it is executed and monitored).
+See [read-only-mode.md](read-only-mode.md) for read-only Docker session behavior (authoring the pending-writes hand-off queue and its format) and [write-mode.md](write-mode.md) for the write-capable agent that processes the queue.
 
 ## GitHub Username
 

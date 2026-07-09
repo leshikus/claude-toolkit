@@ -18,11 +18,16 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-QUEUE_DIR = Path(os.path.expanduser("~/.claude/pending-writes"))
+QUEUE_DIR = Path(os.path.expanduser("~/.config/claude-toolkit/pending-writes"))
 
 
 def is_remote_write(cmd: str) -> bool:
-    """True if the command mutates remote state (push / gh write op)."""
+    """True only for commands that are *certainly* remote writes.
+
+    Anything ambiguous returns False so the read-only agent just tries it -- a
+    real write then 403s under the read-only token. We only block/queue when
+    there is no doubt the command mutates remote state.
+    """
     # git push (covers `git -C <dir> push ...`), except --dry-run (non-mutating)
     if re.search(r"\bgit\b.*\bpush\b", cmd) and not re.search(r"\B--dry-run\b", cmd):
         return True
@@ -41,14 +46,21 @@ def is_remote_write(cmd: str) -> bool:
     if re.search(r"\bgh\s+workflow\s+(run|enable|disable)\b", cmd):
         return True
 
-    # gh api: GET by default. A write requires an explicit write method, OR a
-    # field flag (which forces POST) *unless* the method is explicitly GET
-    # (the report search uses `gh api -X GET ... -f q=...`, a read).
-    if re.search(r"\bgh\s+api\b", cmd):
+    # gh api: block only when it is *certainly* a write. graphql (query vs
+    # mutation is indistinguishable here) and a bare -f/-F (forces POST for REST
+    # but is also used by reads, e.g. `-X GET -f q=`) are NOT certain, so let the
+    # read-only agent try them; a real write just 403s. Two certain signals:
+    #   * an explicit write method (-X/--method POST|PATCH|PUT|DELETE), and
+    #   * a `body=` field -- forces POST and carries a write payload
+    #     (comment/reply/review/...), so it is ~always a mutation (the frequent
+    #     `gh api .../comments -f body=...` case). graphql uses `query=`, not
+    #     `body=`, so this never catches a graphql read.
+    if re.search(r"\bgh\s+api\b", cmd) and not re.search(r"\bgraphql\b", cmd):
         m = re.search(r"(?:-X|--method)\s+([A-Za-z]+)", cmd)
         if m:
             return m.group(1).upper() in {"POST", "PATCH", "PUT", "DELETE"}
-        return bool(re.search(r"(^|\s)(-f|-F|--field|--raw-field|--input)\b", cmd))
+        # No explicit method: a body field forces POST with a write payload.
+        return bool(re.search(r"""(?:-f|-F|--field|--raw-field)\s*['"]?body=""", cmd))
 
     return False
 
@@ -58,8 +70,23 @@ def slugify(text: str) -> str:
     return (text or "write")[:48]
 
 
+def project_dir(cwd: str) -> Path:
+    """Per-project subfolder from the container cwd (/home/ubuntu/repos/<project>/...).
+
+    Grouping a session's writes keeps their order intact and lets the host watcher
+    open one drain tab per project. Falls back to 'misc' when cwd is outside ~/repos.
+    """
+    parts = Path(cwd).parts if cwd else ()
+    if "repos" in parts:
+        i = parts.index("repos")
+        if i + 1 < len(parts):
+            return QUEUE_DIR / parts[i + 1]
+    return QUEUE_DIR / "misc"
+
+
 def queue(cmd: str, description: str, cwd: str = "") -> Path:
-    QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    qdir = project_dir(cwd)
+    qdir.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     stamp = now.strftime("%Y-%m-%d-%H%M")
     header_ts = now.strftime("%Y-%m-%d %H:%M")
@@ -69,10 +96,10 @@ def queue(cmd: str, description: str, cwd: str = "") -> Path:
         parts = cmd.split()
         slug = slugify(parts[0] if parts else "write")
 
-    path = QUEUE_DIR / f"{stamp}-{slug}.md"
+    path = qdir / f"{stamp}-{slug}.md"
     n = 2
     while path.exists():
-        path = QUEUE_DIR / f"{stamp}-{slug}-{n}.md"
+        path = qdir / f"{stamp}-{slug}-{n}.md"
         n += 1
 
     title = description.strip() if description else cmd.strip().splitlines()[0][:80]
@@ -84,7 +111,7 @@ def queue(cmd: str, description: str, cwd: str = "") -> Path:
     command_block = f'cd "{cwd}" &&\n{cmd.rstrip()}' if cwd else cmd.rstrip()
     body = (
         f"### {header_ts} — {title}\n"
-        f"Context: Auto-queued by the queue-writes hook (read-only session); "
+        f"Context: Auto-queued by the queue_writes hook (read-only session); "
         f"a write-capable agent should run the command below.\n"
         f"{workdir_note}\n"
         f"Commands:\n"
@@ -119,7 +146,7 @@ def main() -> int:
             "permissionDecisionReason": (
                 f"Read-only session: this write was queued to {path} instead of "
                 f"running. Do not retry the command; continue with other work and "
-                f"monitor ~/.claude/pending-writes/ — a write-capable agent will "
+                f"monitor ~/.config/claude-toolkit/pending-writes/ — a write-capable agent will "
                 f"execute it and remove the file (or append a Status: failed line)."
             ),
         }

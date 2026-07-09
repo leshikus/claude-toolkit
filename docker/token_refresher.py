@@ -4,10 +4,10 @@
 Only ONE instance runs no matter how many containers launch: a PID-file guard
 makes any redundant instance exit immediately. It re-mints every 50 min
 (installation tokens live ~60 min) by calling mint_gh_token.mint(), which
-rewrites the shared token file and gh hosts.yml under ~/.claude.
+rewrites the shared token file and gh hosts.yml under ~/.config/claude-toolkit.
 
-Started in the background by claude-docker.sh. Runs until killed; stop it with:
-    kill "$(cat ~/.claude/.token-refresher.pid)"
+Started in the background by claude_docker.py. Runs until killed; stop it with:
+    kill "$(cat ~/.config/claude-toolkit/token-refresher.pid)"
 """
 
 import os
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import mint_gh_token
 
-PIDFILE = Path(os.path.expanduser("~/.claude/.token-refresher.pid"))
+PIDFILE = Path(os.path.expanduser("~/.config/claude-toolkit/token-refresher.pid"))
 INTERVAL = 3000  # 50 min
 
 
