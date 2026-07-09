@@ -23,8 +23,8 @@ QUEUE_DIR = Path(os.path.expanduser("~/.claude/pending-writes"))
 
 def is_remote_write(cmd: str) -> bool:
     """True if the command mutates remote state (push / gh write op)."""
-    # git push (covers `git -C <dir> push ...`)
-    if re.search(r"\bgit\b.*\bpush\b", cmd):
+    # git push (covers `git -C <dir> push ...`), except --dry-run (non-mutating)
+    if re.search(r"\bgit\b.*\bpush\b", cmd) and not re.search(r"\B--dry-run\b", cmd):
         return True
 
     # gh <group> <write-verb>
@@ -58,7 +58,7 @@ def slugify(text: str) -> str:
     return (text or "write")[:48]
 
 
-def queue(cmd: str, description: str) -> Path:
+def queue(cmd: str, description: str, cwd: str = "") -> Path:
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     stamp = now.strftime("%Y-%m-%d-%H%M")
@@ -76,12 +76,19 @@ def queue(cmd: str, description: str) -> Path:
         n += 1
 
     title = description.strip() if description else cmd.strip().splitlines()[0][:80]
+    # Prefix a `cd` and note the directory so the command runs in the right repo.
+    # Paths stay container-absolute on purpose: the write-capable executor runs in
+    # the same container image and mounts, so they resolve unchanged -- no host
+    # translation needed.
+    workdir_note = f"Working directory: {cwd}\n" if cwd else ""
+    command_block = f'cd "{cwd}" &&\n{cmd.rstrip()}' if cwd else cmd.rstrip()
     body = (
         f"### {header_ts} — {title}\n"
         f"Context: Auto-queued by the queue-writes hook (read-only session); "
-        f"a write-capable agent should run the command below.\n\n"
+        f"a write-capable agent should run the command below.\n"
+        f"{workdir_note}\n"
         f"Commands:\n"
-        f"```bash\n{cmd.rstrip()}\n```\n"
+        f"```bash\n{command_block}\n```\n"
     )
     path.write_text(body)
     return path
@@ -104,7 +111,7 @@ def main() -> int:
     if not cmd or not is_remote_write(cmd):
         return 0  # not a remote write — normal permission flow
 
-    path = queue(cmd, tool_input.get("description", ""))
+    path = queue(cmd, tool_input.get("description", ""), event.get("cwd", ""))
     decision = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",

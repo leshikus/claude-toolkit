@@ -46,6 +46,15 @@ Then, for each task file:
 
 After the writes succeed, check whether any CI monitoring should be launched. If an executed command pushed commits to a branch that triggers CI, or dispatched a workflow run, arm a background CI monitor for the resulting run (per the CI monitoring rule), so the run is followed to its conclusion instead of dropped.
 
+## CI monitoring
+
+When a read-only session needs to follow a CI run to its conclusion (e.g. after queuing a push or a `can be tested` label that triggers CI):
+
+- **Drive it with `/loop`, not a one-shot background poll.** A `/loop` (self-paced, or with an interval) survives across turns and re-enters on each tick, so the run is followed even after context is summarized or the session is relaunched — a plain `run_in_background` poll dies on relaunch and drops the run.
+- **Post a timestamped progress update to the console on every tick.** Include the UTC time and the current job states, e.g. `[04:50Z] ClickBench amd=in_progress arm=queued`.
+- **Update in place instead of scrolling.** Where the terminal allows it, rewrite the same status line with a carriage return (`\r` / `^M`) rather than printing a fresh line each tick, so the console shows one live-updating line. This also surfaces the current status in the terminal tab title, giving at-a-glance progress without reading the log.
+- Keep the tick interval sane (poll every few minutes, not seconds) and stop the loop once every watched job reaches a terminal state, then report the outcome.
+
 ## Continuous monitoring
 
 Continuously monitor the `~/.claude/pending-writes/` directory. When a new task file appears, start processing it right away following the rules above (summarize for Alexei, execute, delete on success). Do not wait to be asked — as soon as a new pending write shows up, pick it up and process it.
