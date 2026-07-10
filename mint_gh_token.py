@@ -7,9 +7,8 @@ where the containers read it, under ~/.config/claude-toolkit/gh/:
 
 Runs on the HOST (it needs the App private key). The gh dir is mounted into the
 container at gh's default config location, so every container sees the current
-token. Installation tokens live ~1 h, so token_refresher.py calls mint()
-periodically; this file is also runnable directly for the initial synchronous
-mint at launch.
+token. Installation tokens live ~1 h, so monitor.py calls mint() periodically;
+this file is also runnable directly for the initial synchronous mint at launch.
 """
 
 import base64

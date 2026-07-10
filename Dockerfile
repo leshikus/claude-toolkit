@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
+        python3-requests \
         gnupg \
     && install -d -m 0755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -32,11 +33,6 @@ ENV HOME=/home/ubuntu
 USER ubuntu
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="${HOME}/.local/bin:${PATH}"
-
-# Pre-create ~/.claude (owned by this user) so bind-mounting individual config
-# files into it keeps the dir writable for Claude's runtime state (projects,
-# todos, ...) instead of Docker creating it root-owned.
-RUN mkdir -p "$HOME/.claude"
 
 WORKDIR /work
 ENTRYPOINT ["claude"]

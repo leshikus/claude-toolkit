@@ -1,0 +1,6 @@
+# The image installs everything itself and COPYs nothing from the context, so keep
+# the build context lean (the big one is .git).
+.git
+__pycache__/
+*.pyc
+*.txt

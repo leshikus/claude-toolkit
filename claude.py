@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Launch Claude Code in Docker with ~/repos mounted and all permissions granted.
 
-    ./claude_docker.py [claude args...]            # read-only session (default)
-    ./claude_docker.py --write [claude args...]    # read-write: real gh token
+    ./claude.py [claude args...]            # read-only session (default)
+    ./claude.py --write [claude args...]    # read-write: real gh token
 
 Our runtime state (queue, tokens, gh config, keyring copy) lives under
 ~/.config/claude-toolkit/ and is mounted into the container; Claude Code's own
@@ -20,6 +20,7 @@ writes directly, used to drain the pending-writes queue.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -29,11 +30,22 @@ from pathlib import Path
 import mint_gh_token
 
 IMAGE = "claude-toolkit:latest"
-SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_DIR = Path(__file__).resolve().parent  # claude.py is the repo-root entry point
 HOME = Path.home()
 # All of our runtime state lives here (mounted into the container), kept out of
 # Claude Code's own ~/.claude.
 APP_DIR = HOME / ".config" / "claude-toolkit"
+
+
+def container_name(project: str) -> str:
+    """Docker container name for a project's --write drain.
+
+    Per-project so multiple drains run concurrently -- one tab (and one container)
+    each. Sanitized to Docker's allowed name charset [a-zA-Z0-9_.-]. monitor.py
+    imports this so the name it filters `docker ps` on matches the one claude.py sets.
+    """
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "-", project)
+    return f"claude-toolkit-drain-{safe}"
 
 
 def to_container_repo_path(host_path: Path) -> str:
@@ -122,7 +134,7 @@ def restart_helper(script: str, pidfile_name: str) -> None:
         pass
     pidfile.unlink(missing_ok=True)
     subprocess.Popen(
-        [sys.executable, str(SCRIPT_DIR / script)],
+        [sys.executable, str(REPO_DIR / script)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
     )
 
@@ -135,8 +147,8 @@ def ensure_claude_links() -> None:
     """
     claude_dir = HOME / ".claude"
     links = {
-        claude_dir / "CLAUDE.md": SCRIPT_DIR.parent / "CLAUDE.md",
-        claude_dir / "settings.json": SCRIPT_DIR.parent / ".claude" / "settings.json",
+        claude_dir / "CLAUDE.md": REPO_DIR / ".claude" / "CLAUDE.md",
+        claude_dir / "settings.json": REPO_DIR / ".claude" / "settings.json",
     }
     for link, target in links.items():
         if link.exists():
@@ -185,7 +197,7 @@ def main() -> None:
 
     # Always build: Docker's layer cache makes this a fast no-op when nothing in
     # the build context changed, and it picks up Dockerfile edits.
-    subprocess.run(["docker", "build", "-t", IMAGE, str(SCRIPT_DIR)], check=True)
+    subprocess.run(["docker", "build", "-t", IMAGE, str(REPO_DIR)], check=True)
 
     # Persist onboarding state (theme, bypass-permissions acceptance, per-project
     # trust). This lives in ~/.claude.json (a file in $HOME, not inside ~/.claude);
@@ -214,10 +226,10 @@ def main() -> None:
         gh_config_src = write_mode_gh_config()
     else:
         mint_gh_token.mint()
-        # Soft-restart the helpers so edits to them take effect on this launch (a
-        # plain relaunch would exit via the PID guard, leaving the old code running).
-        restart_helper("token_refresher.py", "token-refresher.pid")
-        restart_helper("pending_writes_watcher.py", "pending-writes-watcher.pid")
+        # Soft-restart the monitor (token refresh + pending-writes drain tabs) so
+        # edits to it take effect on this launch -- a plain relaunch would exit via
+        # the PID guard, leaving the old code running.
+        restart_helper("monitor.py", "monitor.pid")
         gh_config_src = str(APP_DIR / "gh")
 
     git_helper = (
@@ -225,28 +237,39 @@ def main() -> None:
         'echo "password=$(cat /home/ubuntu/.config/gh/token)"; }; f'
     )
 
-    # Container-side path to the queue_writes PreToolUse hook (it lives next to
-    # this script) and the working dir, both translated through the ~/repos mount.
-    hook_script = f"{to_container_repo_path(SCRIPT_DIR)}/queue_writes.py"
+    # The queue_writes hook and session-start orientation live in the checkout's
+    # .claude/, mounted at ~/.claude below -- fixed paths, independent of where the
+    # checkout lives. Only the working dir is translated through the ~/repos mount.
+    hook_script = "/home/ubuntu/.claude/hooks/queue_writes.py"
+    session_start_script = "/home/ubuntu/.claude/hooks/session_start.py"
     workdir = to_container_repo_path(Path.cwd())
 
-    # Inject this container's role instructions directly. Read the host-side doc
-    # (write-mode for --write, read-only-mode otherwise) and append it to claude's
-    # system prompt -- more reliable than the global CLAUDE.md @imports, whose host
-    # paths do not resolve inside the container.
-    mode_doc = SCRIPT_DIR.parent / ("write-mode.md" if write_mode else "read-only-mode.md")
-    mode_prompt = mode_doc.read_text() if mode_doc.is_file() else ""
+    # Point this container's session at its role doc (mounted rw under ~/.claude/modes
+    # below, so the agent can refine it). The doc is guidance -- the read-only
+    # guarantee is the queue_writes hook -- so a pointer (vs injecting a snapshot)
+    # is safe and keeps one live, editable source of truth.
+    mode_name = "write-mode" if write_mode else "read-only-mode"
+    mode_prompt = (
+        f"Follow the {mode_name} workflow in ~/.claude/modes/{mode_name}.md. That file "
+        f"is the source of truth; if its guidance is wrong or incomplete (e.g. it did "
+        f"not prevent a mistake you just made), edit it to improve it."
+    )
 
     settings = {
         "apiKeyHelper": "cat /home/ubuntu/.config/claude-toolkit/anthropic-key",
         "theme": "dark",
         "hooks": {
+            "SessionStart": [
+                {
+                    "hooks": [{"type": "command", "command": f"python3 {session_start_script}"}],
+                }
+            ],
             "PreToolUse": [
                 {
                     "matcher": "Bash",
                     "hooks": [{"type": "command", "command": f"python3 {hook_script}"}],
                 }
-            ]
+            ],
         },
     }
 
@@ -262,9 +285,11 @@ def main() -> None:
     # Only allocate a TTY when we actually have one, so read-only mode also works
     # headless (e.g. `-p "..."` driven from another process).
     tty_flags = ["-it"] if sys.stdin.isatty() else []
-    # A fixed name in write mode lets the pending-writes watcher serialize drains
-    # (one tab at a time) via `docker ps`, and refuses a second concurrent drain.
-    name_flags = ["--name", "claude-toolkit-drain"] if write_mode else []
+    # A per-project name in write mode lets the pending-writes watcher run one
+    # drain per project concurrently (a tab each) and, via `docker ps`, avoid
+    # opening a second tab for a project already draining. Derived from the cwd
+    # basename, which is the project the drain tab cd'd into.
+    name_flags = ["--name", container_name(Path.cwd().name)] if write_mode else []
     gnupg_copy = stage_gnupg()
     docker_args = [
         "docker", "run", "--rm", *name_flags, *tty_flags,
@@ -272,11 +297,11 @@ def main() -> None:
         *pending_env,
         "-w", workdir,
         "-v", f"{HOME}/repos:/home/ubuntu/repos:rw",
-        # Claude Code config: mount the repo's committed CLAUDE.md + settings.json
-        # (located relative to this script, so the checkout can live anywhere) into
-        # ~/.claude, rather than the host's personal ~/.claude.
-        "-v", f"{SCRIPT_DIR.parent}/CLAUDE.md:/home/ubuntu/.claude/CLAUDE.md:rw",
-        "-v", f"{SCRIPT_DIR.parent}/.claude/settings.json:/home/ubuntu/.claude/settings.json:rw",
+        # The checkout's .claude/ IS the container's ~/.claude (single rw mount):
+        # config (CLAUDE.md, settings.json), the queue hook, session_start, and the
+        # editable role docs all live here, and Claude's runtime state (history,
+        # projects, ...) persists here between sessions (git-ignored via a whitelist).
+        "-v", f"{REPO_DIR}/.claude:/home/ubuntu/.claude:rw",
         "-v", f"{HOME}/.claude.json:/home/ubuntu/.claude.json:rw",
         "-v", f"{HOME}/.gitconfig:/home/ubuntu/.gitconfig:ro",
         # Our runtime state. Mount ONLY the two queue dirs and the key file -- NOT

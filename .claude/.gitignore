@@ -1,0 +1,15 @@
+# This dir is mounted as the container's ~/.claude, so Claude writes its runtime
+# state here (projects/, todos/, statsig/, shell-snapshots/, history, credentials,
+# settings.local.json). Whitelist: ignore everything, then re-include the tracked
+# config so new runtime files are ignored by default.
+*
+!.gitignore
+!CLAUDE.md
+!settings.json
+!hooks/
+!hooks/**
+hooks/**/__pycache__/
+!modes/
+!modes/**
+!skills/
+!skills/**

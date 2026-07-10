@@ -1,5 +1,7 @@
 # Read-Only Mode (Docker)
 
+The session-start hook (`session_start.py`) drives on-start orientation: when the current branch is found it asks you to show the related PR's progress (CI/check status, review decision, unresolved review threads, mergeability). That instruction now lives in the hook, so it is not repeated here.
+
 If the current session is in read-only mode, do not create PRs, push commits, edit PR titles/bodies, or post comments/reviews/review-comment replies to GitHub directly.
 
 Instead, create one atomic file per operation in a per-project subfolder `~/.config/claude-toolkit/pending-writes/<project>/` (named `<short-slug>.md`), where `<project>` is the basename of the working directory the operation relates to — e.g. `createrelease` — following the queue format below. The subfolder groups a session's writes so the write-capable agent drains one project per tab. Each file has the exact command(s) to run and any payload text (PR body, comment/reply text) the command consumes. A separate write-capable agent (see `write-mode.md`) reads each pending file, executes its commands, and deletes it on success.
@@ -68,3 +70,12 @@ When a read-only session needs to follow a CI run to its conclusion (e.g. after 
 - **Post a timestamped progress update to the console on every tick.** Include the UTC time and the current job states, e.g. `[04:50Z] ClickBench amd=in_progress arm=queued`.
 - **Update in place instead of scrolling.** Where the terminal allows it, rewrite the same status line with a carriage return (`\r` / `^M`) rather than printing a fresh line each tick, so the console shows one live-updating line. This also surfaces the current status in the terminal tab title, giving at-a-glance progress without reading the log.
 - Keep the tick interval sane (poll every few minutes, not seconds) and stop the loop once every watched job reaches a terminal state, then report the outcome.
+
+## Restart command
+
+When the user issues the **restart** command, exit Claude (end the current session), but first preserve the working context so the next session can resume where this one left off:
+
+1. Write the current context to `~/.claude/change-requests/<project>/on_restart.md`, where `<project>` is the basename of the working directory the session relates to (e.g. `createrelease`). Capture what you are in the middle of: the task, what has been done, what remains, any writes queued in `pending-writes/`, and any decisions still open.
+2. As a fallback — in case the file cannot be written or is missed — also print the same context to the screen before exiting.
+
+Then exit.
