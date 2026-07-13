@@ -258,6 +258,10 @@ def main() -> None:
     settings = {
         "apiKeyHelper": "cat /home/ubuntu/.config/claude-toolkit/anthropic-key",
         "theme": "dark",
+        # Read-only mode runs with --dangerously-skip-permissions, which otherwise
+        # shows an interactive one-time "Bypass Permissions mode" warning on every
+        # fresh container. Pre-accept it here so headless sessions don't hang on it.
+        "skipDangerousModePermissionPrompt": True,
         "hooks": {
             "SessionStart": [
                 {
@@ -301,10 +305,12 @@ def main() -> None:
     # basename, which is the project the drain tab cd'd into.
     name_flags = ["--name", container_name(Path.cwd().name)] if write_mode else []
     # --write only: overlay the committed settings.json onto ~/.claude/settings.json
-    # for its permissions allowlist + enabledPlugins. Read-only skips permissions, so
-    # it needs no settings file -- its hooks/apiKeyHelper arrive via --settings.
+    # (a symlink to a host path that doesn't resolve in the container) for its
+    # permissions allowlist + enabledPlugins. rw so Claude can persist acceptance
+    # state. Read-only doesn't mount it -- the bypass warning is suppressed via the
+    # skipDangerousModePermissionPrompt flag in the inline --settings above.
     settings_mount = (
-        ["-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:ro"]
+        ["-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:rw"]
         if write_mode else []
     )
     gnupg_copy = stage_gnupg()
