@@ -24,7 +24,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -109,25 +108,6 @@ def stage_gnupg() -> str:
     return str(dest)
 
 
-def restart_helper(script: str, pidfile_name: str) -> None:
-    """Soft-restart a background helper so edits to it take effect on launch.
-
-    The helpers guard themselves with a PID file, so a plain relaunch would exit
-    as a redundant instance and keep the old code running. SIGTERM the old
-    instance first, then start a fresh one.
-    """
-    pidfile = APP_DIR / pidfile_name
-    try:
-        os.kill(int(pidfile.read_text().strip()), signal.SIGTERM)
-    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
-        pass
-    pidfile.unlink(missing_ok=True)
-    subprocess.Popen(
-        [sys.executable, str(REPO_DIR / script)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
-
-
 def read_keychain_api_key() -> bytes:
     """Read the Claude Code API key from the macOS login Keychain."""
     try:
@@ -207,10 +187,14 @@ def main() -> None:
         gh_config_src = write_mode_gh_config()
     else:
         mint_gh_token.mint()
-        # Soft-restart the monitor (token refresh + pending-writes drain tabs) so
-        # edits to it take effect on this launch -- a plain relaunch would exit via
-        # the PID guard, leaving the old code running.
-        restart_helper("monitor.py", "monitor.pid")
+        # Launch the monitor (token refresh + pending-writes drain tabs). On
+        # startup it supersedes any running instance -- SIGTERMs the incumbent via
+        # the PID file, then claims it -- so this launch always picks up the newest
+        # code without leaving a stale monitor behind.
+        subprocess.Popen(
+            [sys.executable, str(REPO_DIR / "monitor.py")],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
         gh_config_src = str(APP_DIR / "gh")
 
     git_helper = (
