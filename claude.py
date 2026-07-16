@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""Launch Claude Code in Docker with the current directory mounted and all permissions granted.
+"""Launch Claude Code in Docker with the current directory mounted, in auto mode.
 
-    ./claude.py [claude args...]            # read-only session (default)
-    ./claude.py --write [claude args...]    # read-write: real gh token
+    ./claude.py [claude args...]
 
-Our runtime state (queue, tokens, gh config, keyring copy) and toolkit code
-(hooks, mode docs) live under ~/.config/claude-toolkit/ and are mounted into the
-container. The host's own ~/.claude is mounted as-is, so the session runs in the
-user's real Claude environment (their CLAUDE.md, skills, plugins, history); our
-sandbox behavior is layered on via --settings (hooks) and --append-system-prompt.
+The working session runs with the host's real GitHub token and
+`--permission-mode auto`: it works autonomously (no routine permission prompts)
+while Claude Code's auto-mode classifier gates dangerous actions (force push,
+exfiltration, production deploys, routing around a review). Routine pushes and PR
+creation flow directly, so CI starts as soon as a push lands.
 
-Read-only (default): a PreToolUse hook queues GitHub writes to
-~/.config/claude-toolkit/project/pending-writes instead of running them, and the
-GitHub token is a scoped read-only App token kept fresh by a background refresher.
+Our runtime state (gh config, api key, per-project queues, writes log) and toolkit
+code (hooks, mode docs) live under ~/.config/claude-toolkit/ and are mounted into
+the container. The host's own ~/.claude is mounted as-is, so the session runs in
+the user's real Claude environment (their CLAUDE.md, skills, plugins, history);
+our behavior is layered on via --settings (hooks) and --append-system-prompt.
 
---write: extract the host's real gh token (from the login keychain via
-`gh auth token`) into a generated hosts.yml + token file, mount those into the
-container, and leave the queue hook inactive -- so the session executes GitHub
-writes directly, used to drain the pending-writes queue.
+Two hooks observe the session (they never gate it): capture_writes logs every
+remote write to the global writes log (~/.config/claude-toolkit/writes-log/) for a
+separate --review session to analyze after the fact, and arm_monitor arms the host
+monitor's CI watch after a successful push. The host monitor also watches open PRs.
 """
 
 import json
@@ -27,8 +28,6 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-import mint_gh_token
 
 IMAGE = "claude-toolkit:latest"
 REPO_DIR = Path(__file__).resolve().parent  # claude.py is the repo-root entry point
@@ -49,15 +48,16 @@ def container_name(project: str) -> str:
     return f"claude-toolkit-drain-{safe}"
 
 
-def write_mode_gh_config() -> str:
-    """Materialize a gh config dir carrying the host's real token, for --write.
+def real_gh_config() -> str:
+    """Materialize a gh config dir carrying the host's real token.
 
     On macOS the real gh token lives in the login keychain, not in
     ~/.config/gh/hosts.yml, so mounting that dir gives the container no token.
     Extract it with `gh auth token` and write a hosts.yml (for gh) plus a raw
-    token file (for git's credential helper).
+    token file (for git's credential helper). Kept in its own dir (not APP_DIR/gh,
+    which the monitor's token minter still writes to) so nothing clobbers it.
     """
-    dest = APP_DIR / "write-gh"
+    dest = APP_DIR / "real-gh"
     try:
         token = subprocess.run(
             ["gh", "auth", "token", "-h", "github.com"],
@@ -140,29 +140,55 @@ def pull_toolkit() -> None:
 
 
 def main() -> None:
-    write_mode = "--write" in sys.argv[1:]
-    claude_args = [a for a in sys.argv[1:] if a != "--write"]
+    claude_args = sys.argv[1:]
 
     pull_toolkit()
     APP_DIR.mkdir(parents=True, exist_ok=True)
-    # All state for this project lives under projects/<name>/: its three pending-*
-    # queues plus meta.json (the host checkout dir, read by the host monitor). The
-    # whole dir is mounted at the container's ~/.config/claude-toolkit/project, so the
-    # hooks need no project logic. Create the queue dirs so the bind mount attaches
-    # real dirs, not new root-owned ones. ro-token.pem lives in APP_DIR (never mounted).
+    # Per-project state lives under projects/<name>/: the pending-reads /
+    # pending-monitoring queues plus meta.json (the host checkout dir, read by the
+    # host monitor). The whole dir is mounted at the container's
+    # ~/.config/claude-toolkit/project, so the hooks need no project logic. Create the
+    # queue dirs so the bind mount attaches real dirs, not new root-owned ones.
     cwd = Path.cwd()
-    proj_dir = APP_DIR / "projects" / cwd.name
-    for sub in ("pending-writes", "pending-reads", "pending-monitoring"):
+    projects_dir = APP_DIR / "projects"
+    # A monitor-bootstrapped per-PR checkout lives at projects/<name>/repo; its
+    # project state (queues, meta.json) is the parent dir, so the project name is
+    # that parent -- not the generic "repo". Any other cwd names its project by its
+    # own basename, as before.
+    if cwd.name == "repo" and cwd.parent.parent == projects_dir:
+        project = cwd.parent.name
+    else:
+        project = cwd.name
+    proj_dir = projects_dir / project
+    # No pending-writes queue anymore: writes execute directly (auto mode). We keep
+    # pending-reads (the monitor's CI/PR results inbox) and pending-monitoring (the
+    # CI-watch arm requests dropped by arm_monitor).
+    for sub in ("pending-reads", "pending-monitoring"):
         (proj_dir / sub).mkdir(parents=True, exist_ok=True)
-    (proj_dir / "meta.json").write_text(json.dumps({"host_dir": str(cwd)}) + "\n")
+    # Global writes log: one consolidated store of every remote write across all
+    # projects, mounted into the container so capture_writes appends here and the
+    # separate --review session walks one list.
+    writes_log = APP_DIR / "writes-log"
+    writes_log.mkdir(parents=True, exist_ok=True)
+    # Merge, not overwrite: preserve a `pr` claim the monitor (or a prior
+    # session_start) recorded, so an open PR stays associated with this project.
+    meta_file = proj_dir / "meta.json"
+    try:
+        meta = json.loads(meta_file.read_text())
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, ValueError):
+        meta = {}
+    meta["host_dir"] = str(cwd)
+    meta_file.write_text(json.dumps(meta) + "\n")
 
     # Always build: Docker's layer cache makes this a fast no-op when nothing in
     # the build context changed, and it picks up Dockerfile edits.
     subprocess.run(["docker", "build", "-t", IMAGE, str(REPO_DIR)], check=True)
 
-    # Persist onboarding state (theme, bypass-permissions acceptance, per-project
-    # trust). This lives in ~/.claude.json (a file in $HOME, not inside ~/.claude);
-    # ensure it exists so the bind mount attaches a file, not a new empty directory.
+    # Persist onboarding state (theme, per-project trust). This lives in
+    # ~/.claude.json (a file in $HOME, not inside ~/.claude); ensure it exists so the
+    # bind mount attaches a file, not a new empty directory.
     claude_json = HOME / ".claude.json"
     if not claude_json.exists():
         claude_json.write_text("{}")
@@ -178,35 +204,29 @@ def main() -> None:
         os.umask(old_umask)
     key_file.chmod(0o600)
 
-    # GitHub auth. Read-only (default): mint a scoped read-only App token now, plus
-    # a detached self-deduping token refresher and the pending-writes watcher.
-    # --write: extract the host's real gh token. Either way the gh config dir
-    # (hosts.yml + token) is mounted at gh's default location, so git and gh share
-    # one token and the git credential helper is identical.
-    if write_mode:
-        gh_config_src = write_mode_gh_config()
-    else:
-        mint_gh_token.mint()
-        # Launch the monitor (token refresh + pending-writes drain tabs). On
-        # startup it supersedes any running instance -- SIGTERMs the incumbent via
-        # the PID file, then claims it -- so this launch always picks up the newest
-        # code without leaving a stale monitor behind.
-        subprocess.Popen(
-            [sys.executable, str(REPO_DIR / "monitor.py")],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-        )
-        gh_config_src = str(APP_DIR / "gh")
+    # GitHub auth: the working session uses the host's real token (auto mode gates
+    # dangerous writes; the token lets routine writes execute). The gh config dir
+    # (hosts.yml + token) mounts at gh's default location, so git and gh share one
+    # token and the git credential helper is identical.
+    gh_config_src = real_gh_config()
+    # Launch the host monitor (open-PR + CI watch). On startup it supersedes any
+    # running instance -- SIGTERMs the incumbent via the PID file, then claims it --
+    # so this launch always picks up the newest code without leaving a stale monitor.
+    subprocess.Popen(
+        [sys.executable, str(REPO_DIR / "monitor.py")],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
 
     git_helper = (
         '!f() { echo username=x-access-token; '
         'echo "password=$(cat /home/ubuntu/.config/gh/token)"; }; f'
     )
 
-    # Toolkit code (queue_writes, session-start orientation, arm_monitor) is mounted
+    # Toolkit code (capture_writes, session-start orientation, arm_monitor) is mounted
     # under ~/.config/claude-toolkit/ below -- NOT into ~/.claude, so we no longer
     # overwrite the user's ~/.claude dir. Fixed paths, independent of where the
     # checkout lives.
-    hook_script = "/home/ubuntu/.config/claude-toolkit/hooks/queue_writes.py"
+    capture_script = "/home/ubuntu/.config/claude-toolkit/hooks/capture_writes.py"
     session_start_script = "/home/ubuntu/.config/claude-toolkit/hooks/session_start.py"
     arm_monitor_script = "/home/ubuntu/.config/claude-toolkit/hooks/arm_monitor.py"
     # Mount the current directory at the fixed /home/ubuntu/project and work there.
@@ -216,94 +236,59 @@ def main() -> None:
     # computed above, with meta.json already recorded.)
     workdir = "/home/ubuntu/project"
 
-    # Point this container's session at its role doc (mounted rw under
-    # ~/.config/claude-toolkit/modes below, so the agent can refine it). The doc is
-    # guidance -- the read-only guarantee is the queue_writes hook -- so a pointer
-    # (vs injecting a snapshot) is safe and keeps one live, editable source of truth.
-    mode_name = "write-mode" if write_mode else "read-only-mode"
+    # Point this session at its role doc (mounted rw under
+    # ~/.config/claude-toolkit/modes below, so the agent can refine it). A pointer
+    # (vs injecting a snapshot) keeps one live, editable source of truth.
     mode_prompt = (
-        f"Follow the {mode_name} workflow in ~/.config/claude-toolkit/modes/{mode_name}.md. "
-        f"That file is the source of truth; if its guidance is wrong or incomplete (e.g. it "
-        f"did not prevent a mistake you just made), edit it to improve it."
+        "Follow the working-mode workflow in ~/.config/claude-toolkit/modes/working-mode.md. "
+        "That file is the source of truth; if its guidance is wrong or incomplete (e.g. it "
+        "did not prevent a mistake you just made), edit it to improve it."
     )
 
     # The generic toolkit prompt is read from the checkout on the host and injected
-    # into both containers (read-only and --write) as an appended system prompt.
-    # Nothing from .claude/ is mounted into ~/.claude anymore, so this is the only
-    # channel for the prompt. Combine it with the mode pointer so a single
-    # --append-system-prompt carries both.
+    # as an appended system prompt. Nothing from .claude/ is mounted into ~/.claude,
+    # so this is the only channel for the prompt. Combine it with the mode pointer so
+    # a single --append-system-prompt carries both.
     generic_prompt = (REPO_DIR / ".claude" / "toolkit-prompt.md").read_text().strip()
     append_prompt = f"{generic_prompt}\n\n{mode_prompt}"
 
     settings = {
         "apiKeyHelper": "cat /home/ubuntu/.config/claude-toolkit/anthropic-key",
         "theme": "dark",
-        # Read-only mode runs with --dangerously-skip-permissions, which otherwise
-        # shows an interactive one-time "Bypass Permissions mode" warning on every
-        # fresh container. Pre-accept it here so headless sessions don't hang on it.
-        "skipDangerousModePermissionPrompt": True,
         "hooks": {
             "SessionStart": [
                 {
                     "hooks": [{"type": "command", "command": f"python3 {session_start_script}"}],
                 }
             ],
-            "PreToolUse": [
-                {
-                    "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": f"python3 {hook_script}"}],
-                }
-            ],
-            # After a Bash command runs, arm_monitor arms the host monitor for any
-            # successful `git push` (drops a pending-monitoring request). It self-gates:
-            # a push denied by the queue hook in read-only mode never reaches PostToolUse,
-            # so this only fires on real pushes in the write drain container.
+            # After a Bash command runs: capture_writes logs any remote write to the
+            # global writes log (observe-only, never a gate), and arm_monitor arms the
+            # host monitor's CI watch on a successful `git push`.
             "PostToolUse": [
                 {
                     "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": f"python3 {arm_monitor_script}"}],
+                    "hooks": [
+                        {"type": "command", "command": f"python3 {capture_script}"},
+                        {"type": "command", "command": f"python3 {arm_monitor_script}"},
+                    ],
                 }
             ],
         },
     }
 
-    # CLAUDE_PENDING_WRITES arms the queue hook; omit it in write mode so writes run.
-    pending_env = [] if write_mode else ["-e", "CLAUDE_PENDING_WRITES=1"]
-    # Read-only mode bypasses permission prompts (its token can't do real writes and
-    # the hook queues write commands anyway, so prompts would only add friction).
-    # Write mode keeps prompts on so a human approves each write -- which needs an
-    # interactive TTY to answer them.
-    perms_flag = [] if write_mode else ["--dangerously-skip-permissions"]
-    if write_mode and not sys.stdin.isatty():
-        sys.exit("error: --write needs an interactive terminal to answer permission prompts.")
-    # Only allocate a TTY when we actually have one, so read-only mode also works
+    # Only allocate a TTY when we actually have one, so the session also works
     # headless (e.g. `-p "..."` driven from another process).
     tty_flags = ["-it"] if sys.stdin.isatty() else []
-    # A per-project name in write mode lets the pending-writes watcher run one
-    # drain per project concurrently (a tab each) and, via `docker ps`, avoid
-    # opening a second tab for a project already draining. Derived from the cwd
-    # basename, which is the project the drain tab cd'd into.
-    name_flags = ["--name", container_name(Path.cwd().name)] if write_mode else []
-    # --write only: overlay the committed settings.json onto ~/.claude/settings.json
-    # (a symlink to a host path that doesn't resolve in the container) for its
-    # permissions allowlist + enabledPlugins. rw so Claude can persist acceptance
-    # state. Read-only doesn't mount it -- the bypass warning is suppressed via the
-    # skipDangerousModePermissionPrompt flag in the inline --settings above.
-    settings_mount = (
-        ["-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:rw"]
-        if write_mode else []
-    )
     gnupg_copy = stage_gnupg()
     docker_args = [
-        "docker", "run", "--rm", *name_flags, *tty_flags,
+        "docker", "run", "--rm", *tty_flags,
         "-e", "HOME=/home/ubuntu",
-        *pending_env,
         "-w", workdir,
         "-v", f"{cwd}:{workdir}:rw",
         # Mount the host's real ~/.claude as-is: the session runs in the user's own
         # Claude environment -- their CLAUDE.md (memory), skills, commands, plugins,
-        # and history. We impose nothing here; our sandbox behavior arrives via
-        # --settings (hooks) and --append-system-prompt (the generic prompt) instead.
+        # and history. We impose nothing here; our behavior arrives via --settings
+        # (hooks) and --append-system-prompt (the generic prompt) instead.
         # rw because Claude writes its runtime state (history, projects/, todos/).
         "-v", f"{HOME}/.claude:/home/ubuntu/.claude:rw",
         # Toolkit code lives under ~/.config/claude-toolkit/, referenced by the hook
@@ -312,34 +297,39 @@ def main() -> None:
         # the edits land back in the checkout.
         "-v", f"{REPO_DIR}/.claude/hooks:/home/ubuntu/.config/claude-toolkit/hooks:ro",
         "-v", f"{REPO_DIR}/.claude/modes:/home/ubuntu/.config/claude-toolkit/modes:rw",
-        *settings_mount,
+        # settings.json (permissions allowlist + enabledPlugins) at ~/.claude's default
+        # location. Read-only so the container cannot clobber the committed repo source
+        # (see the write-eacces-mounted-settings note). In auto mode narrow allow rules
+        # speed up routine reads; the classifier gates everything else.
+        "-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:ro",
         "-v", f"{HOME}/.claude.json:/home/ubuntu/.claude.json:rw",
         "-v", f"{HOME}/.gitconfig:/home/ubuntu/.gitconfig:ro",
         # Mount THIS project's own dir (projects/<name>/) at a fixed container path,
-        # ~/.config/claude-toolkit/project/, so the hooks see project/pending-writes/...
+        # ~/.config/claude-toolkit/project/, so the hooks see project/pending-reads/...
         # with no project name. It is a fresh subtree -- nothing else mounts under it --
         # so it sidesteps the Docker Desktop virtiofs failure you get from mounting
-        # proj_dir AS ~/.config/claude-toolkit and nesting anthropic-key/hooks/modes on
-        # top. ro-token.pem lives in APP_DIR and is never mounted.
+        # proj_dir AS ~/.config/claude-toolkit and nesting anthropic-key/hooks/modes on top.
         "-v", f"{proj_dir}:/home/ubuntu/.config/claude-toolkit/project:rw",
+        # Global writes log (all projects) so capture_writes records here and the
+        # --review session reads one consolidated list.
+        "-v", f"{writes_log}:/home/ubuntu/.config/claude-toolkit/writes-log:rw",
         "-v", f"{APP_DIR}/anthropic-key:/home/ubuntu/.config/claude-toolkit/anthropic-key:ro",
         # Private copy of the GPG keyring so the container can sign commits without
         # touching the host keyring.
         "-v", f"{gnupg_copy}:/home/ubuntu/.gnupg:rw",
-        # gh config (hosts.yml + token) at gh's default location: read-only mode uses
-        # the scoped App token, --write uses the host's real token.
+        # gh config (hosts.yml + token) at gh's default location: the host's real token.
         "-v", f"{gh_config_src}:/home/ubuntu/.config/gh:rw",
         "-e", "GIT_CONFIG_COUNT=1",
         "-e", "GIT_CONFIG_KEY_0=credential.https://github.com.helper",
         "-e", f"GIT_CONFIG_VALUE_0={git_helper}",
-        IMAGE, *perms_flag,
+        IMAGE, "--permission-mode", "auto",
         "--settings", json.dumps(settings),
         "--append-system-prompt", append_prompt,
         *claude_args,
     ]
 
     # Replace this process with docker so the interactive TTY attaches directly and
-    # signals pass through. The detached refresher/watcher (new session) survive.
+    # signals pass through. The detached monitor (new session) survives.
     os.execvp("docker", docker_args)
 
 
