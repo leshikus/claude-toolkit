@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Launch Claude Code in Docker with the current directory mounted, in auto mode.
 
-    ./claude.py [claude args...]
+    ./claude.py [claude args...]            # working session
+    ./claude.py --review [claude args...]   # review the writes log (one window)
+
+--review opens a session pointed at the global writes log (all projects) with the
+review-mode role doc: it walks the writes one at a time, fetching each diff/PR/CI
+and reporting to you, after the fact. It never gates the working sessions.
 
 The working session runs with the host's real GitHub token and
 `--permission-mode auto`: it works autonomously (no routine permission prompts)
@@ -143,7 +148,8 @@ def pull_toolkit() -> None:
 
 
 def main() -> None:
-    claude_args = sys.argv[1:]
+    review_mode = "--review" in sys.argv[1:]
+    claude_args = [a for a in sys.argv[1:] if a != "--review"]
 
     pull_toolkit()
     APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -242,9 +248,11 @@ def main() -> None:
 
     # Point this session at its role doc (mounted rw under
     # ~/.config/claude-toolkit/modes below, so the agent can refine it). A pointer
-    # (vs injecting a snapshot) keeps one live, editable source of truth.
+    # (vs injecting a snapshot) keeps one live, editable source of truth. --review
+    # runs the review agent over the writes log; the default is the working agent.
+    mode_doc = "review-mode" if review_mode else "working-mode"
     mode_prompt = (
-        "Follow the working-mode workflow in ~/.config/claude-toolkit/modes/working-mode.md. "
+        f"Follow the {mode_doc} workflow in ~/.config/claude-toolkit/modes/{mode_doc}.md. "
         "That file is the source of truth; if its guidance is wrong or incomplete (e.g. it "
         "did not prevent a mistake you just made), edit it to improve it."
     )
@@ -293,6 +301,14 @@ def main() -> None:
     # Only allocate a TTY when we actually have one, so the session also works
     # headless (e.g. `-p "..."` driven from another process).
     tty_flags = ["-it"] if sys.stdin.isatty() else []
+    # --review needs every project's dir (to read each meta.json for repo/PR, and any
+    # per-PR checkout under projects/<name>/repo). A working session sees only its own
+    # project, so this all-projects mount is review-only. The container target
+    # (.../projects) is a sibling of the per-project .../project mount, not nested.
+    review_mount = (
+        ["-v", f"{projects_dir}:/home/ubuntu/.config/claude-toolkit/projects:rw"]
+        if review_mode else []
+    )
     gnupg_copy = stage_gnupg()
     docker_args = [
         "docker", "run", "--rm", *tty_flags,
@@ -327,6 +343,8 @@ def main() -> None:
         # Global writes log (all projects) so capture_writes records here and the
         # --review session reads one consolidated list.
         "-v", f"{writes_log}:/home/ubuntu/.config/claude-toolkit/writes-log:rw",
+        # --review only: every project's dir (meta.json + per-PR checkouts).
+        *review_mount,
         "-v", f"{APP_DIR}/anthropic-key:/home/ubuntu/.config/claude-toolkit/anthropic-key:ro",
         # Private copy of the GPG keyring so the container can sign commits without
         # touching the host keyring.

@@ -74,6 +74,20 @@ def git(cwd: str, *args: str):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def gh_repo(cwd: str):
+    """`owner/name` of the repo at `cwd` (its origin), or None.
+
+    Recorded on a push so the review session can fetch the commit remotely without
+    a local checkout. The fork's own coordinate is fine -- the pushed commit lives
+    there too, so `gh api repos/<repo>/commits/<sha>` resolves it.
+    """
+    r = subprocess.run(
+        ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
 def project_name() -> str:
     """Real project name: basename of host_dir in meta.json, else the cwd basename.
 
@@ -118,9 +132,10 @@ def main() -> int:
     }
     if entry["kind"] == "push":
         # Record where the push landed so the review session can locate the exact
-        # commit(s) without re-deriving them: HEAD sha + branch of the pushed repo.
+        # commit(s) without re-deriving them: repo + HEAD sha + branch.
         entry["sha"] = git(cwd, "rev-parse", "HEAD")
         entry["branch"] = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+        entry["repo"] = gh_repo(cwd)
 
     try:
         WRITES_LOG.mkdir(parents=True, exist_ok=True)
