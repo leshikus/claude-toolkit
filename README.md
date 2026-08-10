@@ -24,6 +24,30 @@ you want oversight, open `--review`: it walks every logged write one at a time
 follows its CI to conclusion and drops the result back for the session to react to,
 and it watches your open PRs for changes — no `/loop` babysitting.
 
+The monitor also watches how you and the agent are working together, and tells **you**
+which Claude Code capability would make it go better. While a session is actively
+coding — judged by its history still growing — the monitor distills the transcript
+(tool-call counts, calls that repeated verbatim, what failed, turn durations, context
+re-read) and asks a separate model what to change about the setup. Each cycle looks at
+the single most recent session and prints at most one line into the monitoring tab, so
+the stream is a slow drip you can read at a glance:
+
+```
+09:44:05  hint cr26.6 — Try `/investigate-ci` and `/patch-release-check` next time: this session manually rebuilt both workflows via dozens of ad-hoc `gh` calls.
+09:44:56  hint no-manual-appr — Try the continue-pr skill to resume PR #67558 across sessions instead of manually git fetch+checkout of the branch.
+```
+
+The last few hints are replayed to the model each cycle so it never rephrases advice
+you have already been given.
+
+The waste in the transcript is only the symptom; the hint is the mechanism that
+removes it — a skill you already have but aren't reaching for, a hook, a subagent, a
+permission rule, a different opening prompt. It is deliberately biased against telling
+you to add prompt text: a `CLAUDE.md` rule is paid in tokens on every future session,
+so it has to beat a mechanism that costs nothing until it is used. The hinter is handed
+an inventory of what you already have configured, and saying nothing is the expected
+answer.
+
 ## How the safety works
 
 - **Auto mode** (`--permission-mode auto`): no routine prompts, but a classifier
@@ -41,7 +65,8 @@ never touches your host keyring.
 
 Details: [`working-mode.md`](.claude/modes/working-mode.md),
 [`pre-push-review.md`](.claude/modes/pre-push-review.md),
-[`review-mode.md`](.claude/modes/review-mode.md).
+[`review-mode.md`](.claude/modes/review-mode.md),
+[`history-hints.md`](.claude/modes/history-hints.md).
 
 ## Needs
 

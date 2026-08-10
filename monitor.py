@@ -3,7 +3,7 @@
 
 A std-lib `sched.scheduler` drives a time-ordered queue of `Event` objects. Each
 event's `fire` does its work and re-arms itself (or schedules other events) on the
-scheduler, so the queue never empties and the loop runs forever. Two recurring
+scheduler, so the queue never empties and the loop runs forever. Three recurring
 events cover the jobs below; the monitoring event schedules a fresh CiWatchEvent
 per request it discovers -- events adding events at runtime:
   1. Service the pending-monitoring queue -- each request (dispatched by `kind`;
@@ -16,8 +16,9 @@ per request it discovers -- events adding events at runtime:
      credentials, independent of the container, so Actions/checks are readable.
   2. Watch every open pull request (authored by you + review-requested) for a
      change that needs your attention -- CI reaching a terminal state, a new
-     comment/review from someone else, or a fresh review request. Each change fires
-     a macOS notification and is handed to an agent: if a project already tracks the
+     comment/review from someone else, or a fresh review request. Each change is
+     printed to the monitoring tab (an iTerm tab tailing notifications.log, opened on
+     startup) and is handed to an agent: if a project already tracks the
      PR (its dir exists under projects/, or its meta.json claims it) the change
      lands in that project's pending-reads/; otherwise a per-PR iTerm console is
      opened that clones the PR into projects/pr<N>/repo and starts a session on it.
@@ -26,6 +27,22 @@ per request it discovers -- events adding events at runtime:
      inside projects/. Per-PR state persists to pr-state.json, so the frequent
      self-supersede restarts do not re-notify; a PR seen for the first time is
      baselined silently.
+  3. Read the history of a session that is coding *right now* and tell YOU -- the
+     human running it -- which Claude Code capability would make it cheaper. Claude
+     Code records each session as a JSONL transcript under ~/.claude/projects/ (the
+     host's ~/.claude is mounted into the container, so container sessions land there
+     too), appending an entry per step, so a transcript still growing is the signal
+     that an agent is mid-work; only those are considered. The transcript is distilled
+     into aggregate stats -- calls per tool, identical calls repeated, failures, turn
+     durations, token volume -- plus a tail of the actual steps, and a separate model
+     is asked what to change about the setup: adopt a skill, add a hook, send a
+     subagent, allow a permission, open with a different prompt. The waste is only the
+     symptom; advice the agent would have to act on is useless to the reader, and a
+     new CLAUDE.md rule is charged against every future session, so the hinter is
+     handed an inventory of the existing setup and told that silence is usually right.
+     At most two one-line hints print inline in the monitoring tab -- that is the
+     whole delivery. Our own headless agents (the pre-push reviewer, this hinter)
+     write transcripts into the same dirs and are skipped, so it never feeds itself.
 
 One instance runs at a time: on startup a new monitor supersedes any running
 one (SIGTERMs the incumbent via the PID file, then claims it), so a relaunch
@@ -45,11 +62,13 @@ import signal
 import subprocess
 import sys
 import time
+from collections import Counter, deque
 from pathlib import Path
 
 APP_DIR = Path(os.path.expanduser("~/.config/claude-toolkit"))
 PIDFILE = APP_DIR / "monitor.pid"
-LAUNCHER = Path(__file__).resolve().parent / "claude.py"
+REPO_DIR = Path(__file__).resolve().parent
+LAUNCHER = REPO_DIR / "claude.py"
 # All per-project state lives under projects/<name>/: the pending-reads /
 # pending-monitoring queues plus meta.json (host_dir + any PR claim). claude.py
 # mounts projects/<name>/ at the container's ~/.config/claude-toolkit/project, so the
@@ -61,6 +80,29 @@ WATCH_EXPIRY = 6 * 3600    # give up on a watch with no terminal result after th
 PR_SCAN_INTERVAL = 300     # seconds between full open-PR scans
 PR_DIGEST_INTERVAL = 3600  # seconds between summary ("regular") notifications
 PR_STATE_FILE = APP_DIR / "pr-state.json"  # per-PR state, so restarts don't re-notify
+NOTIFY_LOG = APP_DIR / "notifications.log"  # every notification, tailed in the monitor tab
+MONITOR_TAB_TITLE = "claude-toolkit monitor"  # iTerm session name of the monitoring tab
+MONITOR_TAB_PID = APP_DIR / "monitor-tab.pid"  # PID of the tab's tail, so we reopen only if gone
+
+# Agent-history hints (job 3 below). Claude Code writes one JSONL transcript per
+# session under ~/.claude/projects/<mangled-cwd>/<session-id>.jsonl; the host's
+# ~/.claude is mounted into the container, so container sessions land here too.
+CLAUDE_PROJECTS_DIR = Path(os.path.expanduser("~/.claude/projects"))
+HINT_STATE_FILE = APP_DIR / "hint-state.json"  # per-transcript progress, survives restarts
+HINT_DOC = REPO_DIR / ".claude" / "modes" / "history-hints.md"  # the hinter's instructions
+HISTORY_SCAN_INTERVAL = 300   # seconds between transcript scans
+HISTORY_ACTIVE_WINDOW = 600   # a session is "actively coding" if written within this
+HINT_MIN_NEW_BYTES = 20_000   # new transcript bytes needed before hinting a session again
+HINT_MIN_TOOL_CALLS = 10      # skip a window with too little work to say anything about
+HINT_MAX_LINES = 1            # one hint per cycle: the stream stays glanceable
+HINT_MAX_LINE_CHARS = 140     # ... and it must fit one terminal line of that stream
+HINT_STATE_TTL = 6 * 3600     # forget a transcript's mark once it is this stale
+HINT_RECENT_MEMORY = 5        # past hints replayed to the hinter so it does not repeat one
+HISTORY_READS_PER_SCAN = 20   # transcripts read per scan (a skipped one costs only I/O)
+HINT_MODEL = os.environ.get("CLAUDE_HINT_MODEL", "claude-sonnet-5")  # a second opinion
+HINT_TIMEOUT = 240            # seconds to wait for the hinter
+HINT_TAIL_ENTRIES = 600       # transcript entries (newest) distilled into the trace
+HINT_MAX_TRACE_CHARS = 60_000  # cap the distilled trace fed to the hinter
 
 
 def _supersede_incumbent() -> None:
@@ -128,6 +170,48 @@ def _open_iterm_tab(title: str, launch: str) -> None:
         "end tell\n"
     )
     subprocess.run(["osascript", "-e", script], check=False)
+
+
+def _monitor_tab_alive() -> bool:
+    """True if the monitoring tab's `tail` is still running.
+
+    The monitor self-supersedes on every launch, so without this check each
+    relaunch would spawn another tab. We can't rely on the iTerm session name
+    (a running job overrides it), so the tab's launch command records its own
+    PID in MONITOR_TAB_PID and we probe that: the tail is iTerm's child, not the
+    monitor's, so it (and the tab) survive a supersede and get reused. Closing
+    the tab kills the tail, so the probe fails and we reopen.
+    """
+    try:
+        pid = int(MONITOR_TAB_PID.read_text().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return False
+    try:
+        os.kill(pid, 0)  # existence check; ProcessLookupError => gone
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _ensure_monitor_tab() -> None:
+    """Open the monitoring tab (once) that tails every notification line.
+
+    All notifications are printed here instead of firing macOS banners, so the
+    open set of PR changes is visible at a glance. The launch line records the
+    tail's PID (via `exec`, tail keeps the shell's `$$`) so a relaunch can tell
+    a live tab from a closed one. `tail -F` follows the log across
+    truncation/rotation; `-n +1` replays from the top so a fresh tab shows the
+    existing history, not just new lines.
+    """
+    NOTIFY_LOG.parent.mkdir(parents=True, exist_ok=True)
+    NOTIFY_LOG.touch(exist_ok=True)
+    if _monitor_tab_alive():
+        return
+    launch = (
+        f"echo $$ > {_shquote(str(MONITOR_TAB_PID))}; "
+        f"exec tail -n +1 -F {_shquote(str(NOTIFY_LOG))}"
+    )
+    _open_iterm_tab(MONITOR_TAB_TITLE, launch)
 
 
 # ---- Job 3: servicing pending-monitoring -> pending-reads -------------------
@@ -353,12 +437,19 @@ class CiWatchEvent(Event):
 
 
 def _notify(title: str, message: str) -> None:
-    """Post a macOS notification (best-effort; never raises)."""
-    script = (
-        f"display notification {_osaquote(message)} "
-        f'with title {_osaquote(title)} sound name "Glass"'
-    )
-    subprocess.run(["osascript", "-e", script], check=False)
+    """Append a notification line to the log tailed in the monitor tab.
+
+    Replaces the old macOS `display notification`: a banner sent via osascript
+    opens Script Editor when clicked and scrolls away, so it never told you
+    *which* PR changed. A tailed line stays visible and readable. Best-effort;
+    never raises.
+    """
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {title} — {message}\n"
+    try:
+        with NOTIFY_LOG.open("a") as f:
+            f.write(line)
+    except OSError:
+        pass
 
 
 def _load_json(path: Path, default):
@@ -521,9 +612,12 @@ class PullRequestsEvent(Event):
     it compares CI state, latest foreign comment/review timestamp, and the review-
     requested flag against `self.state` (persisted to PR_STATE_FILE, so the monitor's
     frequent self-supersede restarts do not re-notify). A PR seen for the first time
-    is baselined silently. On a transition it notifies (macOS) and routes the change
-    to a agent -- an existing project's pending-reads, or a fresh per-PR
-    console. A periodic digest summarizes the open set. Re-arms every PR_SCAN_INTERVAL.
+    is baselined silently. On a transition it prints a line to the monitoring tab
+    (marked ⚠ when the PR needs your action) and routes the change to a agent -- an
+    existing project's pending-reads, or a fresh per-PR console. A periodic digest
+    lists the standing "action required" set (review requests, red CI), so an item
+    you have not acted on keeps showing even without a fresh change. Re-arms every
+    PR_SCAN_INTERVAL.
     """
 
     priority = 4
@@ -550,11 +644,9 @@ class PullRequestsEvent(Event):
         prs = {_pr_key(p): p for p in _search_prs(["--author", "@me"]) + review_prs}
 
         claims = _meta_pr_claims()
-        need_action = 0
         for key, pr in prs.items():
             notes = self._evaluate(key, pr, key in review_keys)
             if notes:
-                need_action += 1
                 self._dispatch(key, pr, notes, claims)
 
         # Forget PRs that merged/closed so their state and launch guard don't linger.
@@ -562,16 +654,42 @@ class PullRequestsEvent(Event):
         self.launched &= set(prs)
         _save_json(PR_STATE_FILE, self.state)
 
+        # Standing "action required" set: PRs whose present state needs you (a review
+        # requested of you, red CI on your own PR), recomputed every scan -- so an
+        # item stays marked until you act, not just on the cycle it first changed.
+        action = [
+            (pr, self.state[key]["action"])
+            for key, pr in prs.items() if (self.state.get(key) or {}).get("action")
+        ]
         now = time.time()
         if now - self.last_digest >= PR_DIGEST_INTERVAL:
             self.last_digest = now
-            _notify("Open pull requests", f"{len(prs)} open, {need_action} need action")
+            lines = [f"{len(prs)} open, {len(action)} action required"]
+            for pr, reason in sorted(action, key=lambda pa: _pr_key(pa[0])):
+                lines.append(f"  ⚠ {_pr_key(pr)} — {reason} — {pr.get('url')}")
+            _notify("Open pull requests", "\n".join(lines))
+
+    def _pr_action(self, cur: dict, is_review_req: bool) -> str | None:
+        """Current 'action required' reason for a PR, or None.
+
+        Unlike the transition notes, this reflects the PR's *present* state on every
+        scan, so a standing item -- a review requested of you, red CI on your own PR
+        -- keeps showing in the digest until you act, regardless of whether anything
+        changed this cycle. Add reasons here as new signals are wanted.
+        """
+        if is_review_req:
+            return "review requested"
+        if cur.get("ci") == "failure":
+            return "CI failing"
+        return None
 
     def _evaluate(self, key: str, pr: dict, is_review_req: bool) -> list:
         """Update stored state for a PR; return the human-readable changes, if any.
 
         First sight baselines silently (returns []), so pre-existing comments/CI on
-        a PR the monitor has never seen do not fire a notification.
+        a PR the monitor has never seen do not fire a *transition* notification --
+        but the PR's `action` reason is still recorded, so a just-discovered review
+        request is marked in the very next digest.
         """
         repo = pr["repository"]["nameWithOwner"]
         detail = _gh_json([
@@ -583,6 +701,7 @@ class PullRequestsEvent(Event):
             "activity": _latest_foreign_activity(detail, self.login),
             "review_requested": is_review_req,
         }
+        cur["action"] = self._pr_action(cur, is_review_req)
         prev = self.state.get(key)
         self.state[key] = cur
         if prev is None:
@@ -598,8 +717,9 @@ class PullRequestsEvent(Event):
 
     def _dispatch(self, key: str, pr: dict, notes: list, claims: dict) -> None:
         """Notify, and hand the change to a agent (existing or fresh)."""
+        mark = "⚠ " if (self.state.get(key) or {}).get("action") else ""
         title = (pr.get("title") or "")[:50]
-        _notify(f"PR #{pr['number']}: {title}", "; ".join(notes))
+        _notify(f"{mark}PR #{pr['number']}: {title}", "; ".join(notes))
         text = _pr_change_text(pr, notes)
 
         # An agent already tracks this PR -> its pending-reads inbox. Match either an
@@ -614,24 +734,507 @@ class PullRequestsEvent(Event):
             _deliver_pr_read(project, pr["number"], text)
             return
 
-        # No agent yet: open a per-PR console (once per run; the project dir it leaves
-        # behind routes later changes to pending-reads even after a monitor restart).
-        if key in self.launched:
+        # No agent yet: this used to check out the PR and launch a fresh agent
+        # console for it. Disabled pending a rethink of when/whether the monitor
+        # should auto-spawn agents on an event -- for now an untracked PR only
+        # notifies (see the ⚠ digest); nothing is checked out or launched. Restore
+        # by uncommenting; _open_pr_console / _write_pr_meta remain defined.
+        #
+        # if key in self.launched:
+        #     return
+        # self.launched.add(key)
+        # project = _pr_project(pr)
+        # _deliver_pr_read(project, pr["number"], text)  # pre-seed the new inbox
+        # _write_pr_meta(project, pr)
+        # _open_pr_console(pr, project)
+
+
+# ---- Job 5: hints from recent agent history ---------------------------------
+
+
+def _clip(s: str, n: int) -> str:
+    """Collapse whitespace and cut to `n` chars -- transcript fields are unbounded."""
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[:n] + "..."
+
+
+def _clip_words(s: str, n: int) -> str:
+    """Clip to `n` chars on a word boundary; a hint cut mid-word reads as garbage.
+
+    The model is told to write within the limit, so this is the backstop for the
+    occasional overshoot -- worth making the result still readable.
+    """
+    s = " ".join((s or "").split())
+    if len(s) <= n:
+        return s
+    head = s[:n].rsplit(" ", 1)[0] or s[:n]
+    return head.rstrip(" ,;:-") + "..."
+
+
+def _tool_brief(inp) -> str:
+    """One-line gist of a tool call: the input field that says what it acted on.
+
+    Keyed off the field names the built-in tools use, so a Bash call reads as its
+    command and a Read as its path. Two calls with the same (name, brief) are the
+    same call -- that is what makes repetition detectable.
+    """
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("command", "file_path", "pattern", "path", "url", "query", "prompt"):
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            return " ".join(val.split())
+    return " ".join(json.dumps(inp, default=str).split())
+
+
+def _result_text(block: dict) -> str:
+    """Text of a tool_result, whose content is either a string or a block list."""
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(b.get("text") or "" for b in content if isinstance(b, dict))
+    return ""
+
+
+def _read_transcript(path: Path):
+    """Read one session transcript: (tail entries, session-start text, cwd, is_interactive).
+
+    Streams the whole file but keeps only the newest HINT_TAIL_ENTRIES entries -- a
+    transcript runs to megabytes and the recent history is what we hint on. Two
+    things are collected on the way, because both live outside the tail:
+
+    - the SessionStart hook's output, the only place the real project name appears
+      (container sessions all run at the fixed /home/ubuntu/project, so neither the
+      cwd nor the transcript's dir name distinguishes them), plus the session's
+      first cwd as a fallback for a host session;
+    - whether the session is interactive at all. Our own headless agents (the
+      pre-push reviewer, and this hinter) write transcripts into the same dirs, and
+      they are marked `sdk`/`sdk-cli`; hinting them would be noise, and hinting the
+      hinter would feed itself. A session counts as interactive only once a
+      human-origin typed prompt is seen.
+    """
+    entries = deque(maxlen=HINT_TAIL_ENTRIES)
+    start = ""
+    cwd = ""
+    interactive = False
+    with path.open(errors="replace") as f:
+        for line in f:
+            try:
+                e = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue  # a partially-written trailing line from a live session
+            if e.get("type") == "user" and (e.get("origin") or {}).get("kind") == "human":
+                interactive = True
+            if not cwd and e.get("cwd"):
+                cwd = e["cwd"]  # first cwd: a session can cd away mid-run
+            if not start and e.get("type") == "attachment":
+                att = e.get("attachment") or {}
+                if att.get("hookEvent") == "SessionStart":
+                    start = att.get("content") or ""
+            entries.append(e)
+    return list(entries), start, cwd, interactive
+
+
+def _history_project(session_start: str, cwd: str, path: Path) -> str:
+    """Project a transcript belongs to: the name the session-start hook reported.
+
+    Falls back to the basename of the session's cwd, which is right for a host
+    session (and merely generic -- "project" -- for a container one, where the hook
+    output is the real source). Last resort is the transcript's dir name, which is
+    the cwd path-mangled and so cannot be split back into components. Sanitized,
+    since the result becomes a path component under projects/.
+    """
+    m = re.search(r"^Project name: (.+)$", session_start, re.M)
+    if m and m.group(1).strip():
+        name = m.group(1).strip()
+    else:
+        name = os.path.basename((cwd or "").rstrip("/")) or path.parent.name
+    return re.sub(r"[^a-zA-Z0-9_.-]", "-", name) or "unknown"
+
+
+def _distill_history(entries: list):
+    """Turn transcript entries into (stats, trace, tool_calls) for the hinter.
+
+    Raw JSONL is far too big, and mostly noise for this purpose (thinking
+    signatures, whole-file reads, base64). So we hand the model two things:
+
+    - `stats`: the aggregates that expose waste without reading every step -- calls
+      per tool, which *identical* calls repeated, what failed and with what error,
+      turn durations, and token volume (context re-read is the cost of bloat).
+    - `trace`: the tail of the real steps, so a hint can name the calls involved.
+    """
+    tools = Counter()      # tool name -> number of calls
+    sigs = Counter()       # (name, brief) -> calls; >1 means a literally repeated call
+    calls = {}             # tool_use id -> (name, brief), to attribute a failed result
+    failures = []
+    durations = []
+    prompts = 0
+    out_tokens = cache_reads = 0
+    lines = []
+
+    for e in entries:
+        etype = e.get("type")
+        if etype == "attachment":
+            att = e.get("attachment") or {}
+            if att.get("hookEvent") == "SessionStart":
+                lines.append(f"[session start] {_clip(att.get('content') or '', 400)}")
+            continue
+        if etype == "system":
+            if e.get("subtype") == "turn_duration":
+                secs = (e.get("durationMs") or 0) / 1000
+                durations.append(secs)
+                lines.append(f"[turn ended: {secs:.0f}s over {e.get('messageCount')} messages]")
+            continue
+        msg = e.get("message") or {}
+        if etype == "assistant":
+            usage = msg.get("usage") or {}
+            out_tokens += usage.get("output_tokens") or 0
+            cache_reads += usage.get("cache_read_input_tokens") or 0
+        content = msg.get("content")
+        if isinstance(content, str):  # a typed human prompt
+            if etype == "user":
+                prompts += 1
+                lines.append(f"USER: {_clip(content, 600)}")
+            continue
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            kind = b.get("type")
+            if kind == "text":
+                if etype == "user":
+                    prompts += 1
+                    lines.append(f"USER: {_clip(b.get('text') or '', 600)}")
+                else:
+                    lines.append(f"ASSISTANT: {_clip(b.get('text') or '', 300)}")
+            elif kind == "tool_use":
+                name = b.get("name") or "?"
+                brief = _tool_brief(b.get("input"))
+                tools[name] += 1
+                sigs[(name, brief)] += 1
+                calls[b.get("id")] = (name, brief)
+                lines.append(f"TOOL {name}: {_clip(brief, 300)}")
+            elif kind == "tool_result":
+                text = _result_text(b)
+                if b.get("is_error"):
+                    failures.append((calls.get(b.get("tool_use_id")), _clip(text, 200)))
+                    lines.append(f"  -> ERROR: {_clip(text, 200)}")
+                else:
+                    lines.append(f"  -> {_clip(text, 200)}")
+
+    stats = [f"Tool calls: {sum(tools.values())} total"]
+    if tools:
+        stats.append("  by tool: " + ", ".join(f"{n} x{c}" for n, c in tools.most_common()))
+    repeats = [(sig, c) for sig, c in sigs.most_common(12) if c > 1]
+    if repeats:
+        stats.append(f"Identical calls made more than once ({len(repeats)} distinct):")
+        for (name, brief), c in repeats:
+            stats.append(f"  x{c} {name}: {_clip(brief, 200)}")
+    if failures:
+        stats.append(f"Failed tool calls: {len(failures)}")
+        for call, err in failures[-8:]:
+            name, brief = call or ("?", "")
+            stats.append(f"  {name}: {_clip(brief, 120)} -> {err}")
+    if durations:
+        stats.append(
+            f"Turns: {len(durations)}, total {sum(durations) / 60:.1f} min, "
+            f"slowest {max(durations):.0f}s"
+        )
+    stats.append(f"Typed user prompts: {prompts}")
+    stats.append(
+        f"Assistant output tokens: {out_tokens}; context re-read from cache: {cache_reads}"
+    )
+
+    # Keep the newest lines that fit -- the recent steps are the ones worth hinting on.
+    trace, size = [], 0
+    for ln in reversed(lines):
+        size += len(ln) + 1
+        if size > HINT_MAX_TRACE_CHARS:
+            trace.append("[... earlier steps omitted ...]")
+            break
+        trace.append(ln)
+    trace.reverse()
+    return "\n".join(stats), "\n".join(trace), sum(tools.values())
+
+
+def _always_loaded() -> list:
+    """Prompt files loaded into every session's context, host paths.
+
+    The project's own CLAUDE.md is found through meta.json's recorded host_dir, since
+    the monitor never learns a repo's layout otherwise.
+    """
+    files = [
+        Path(os.path.expanduser("~/.claude/CLAUDE.md")),
+        REPO_DIR / ".claude" / "toolkit-prompt.md",
+        REPO_DIR / ".claude" / "modes" / "working-mode.md",
+    ]
+    return [f for f in files if f.is_file()]
+
+
+def _skill_names(project: str) -> list:
+    """Skills reachable from a session: the user's own plus the project's."""
+    roots = [Path(os.path.expanduser("~/.claude/skills"))]
+    host_dir = (_load_json(PROJECTS_DIR / project / "meta.json", {}) or {}).get("host_dir")
+    if host_dir:
+        roots.append(Path(host_dir) / ".claude" / "skills")
+    names = set()
+    for root in roots:
+        for skill in root.glob("*/SKILL.md"):
+            names.add(skill.parent.name)
+    return sorted(names)
+
+
+def _setup_inventory(project: str) -> str:
+    """What is already configured, so the hinter proposes only genuinely new setup.
+
+    Also states the size of the always-loaded prompt text: the cost of another
+    CLAUDE.md rule is the whole judgment call, and it should be a number the model can
+    see rather than an abstraction.
+    """
+    loaded = _always_loaded()
+    chars = sum(len(f.read_text(errors="replace")) for f in loaded)
+    hooks = sorted(p.stem for p in (REPO_DIR / ".claude" / "hooks").glob("*.py"))
+    skills = _skill_names(project)
+    return "\n".join([
+        "Already configured -- do not propose any of these again:",
+        f"  hooks: {', '.join(hooks) or '(none)'}",
+        "  monitor jobs: CI watch armed on push (result lands in pending-reads),",
+        "    open-PR watch (comments/reviews/CI/review requests), these hints",
+        "  session settings: auto permission mode, pre-push review by a second model,",
+        "    every remote write logged for a separate --review session",
+        f"  skills available: {', '.join(skills) or '(none)'}",
+        "",
+        "Context already spent before a session starts: "
+        f"~{chars:,} characters of always-loaded prompt text across {len(loaded)} files "
+        f"({', '.join(f.name for f in loaded)}). Anything added there is paid again on "
+        "every future session.",
+    ])
+
+
+def _run_hinter(prompt: str):
+    """Run the headless hinter model; None on any failure, which the caller skips.
+
+    Authenticates like any host CLI invocation, from the login Keychain. Run from the
+    checkout so the model sees a fixed environment regardless of where the monitor
+    was launched. Blocking -- see the class docstring on scheduler occupancy.
+    """
+    try:
+        r = subprocess.run(
+            ["claude", "-p", "--model", HINT_MODEL],
+            input=prompt, capture_output=True, text=True,
+            timeout=HINT_TIMEOUT, cwd=str(REPO_DIR),
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def _hint_lines(out: str) -> list:
+    """Split hinter output into individual one-line hints, capped for the stream.
+
+    The hints are read inline in the notification stream, so each has to survive as a
+    single glanceable line: bullet markers are stripped, a wrapped bullet is folded
+    back into one line, and both the count and the length are enforced here rather
+    than trusted to the model.
+    """
+    hints = []
+    for raw in out.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith(("- ", "* ")) or re.match(r"^\d+[.)]\s", s):
+            hints.append(re.sub(r"^([-*]|\d+[.)])\s*", "", s))
+        elif hints:
+            hints[-1] += " " + s  # a bullet the model wrapped across lines
+        else:
+            hints.append(s)       # output with no bullet markers at all
+    out_lines = []
+    for h in hints:
+        h = _clip_words(h, HINT_MAX_LINE_CHARS)
+        if h:
+            out_lines.append(h)
+        if len(out_lines) >= HINT_MAX_LINES:
+            break
+    return out_lines
+
+
+class HistoryHintsEvent(Event):
+    """Tell the operator which Claude Code capability would make the live session cheaper.
+
+    Claude Code records every session as a JSONL transcript under
+    ~/.claude/projects/; the host's ~/.claude is mounted into the container, so
+    container sessions show up here too. Each cycle takes the single most recently
+    written transcript (see `_candidates` -- a live file means an agent is mid-work),
+    distills it into aggregate stats plus a trace tail (see `_distill_history` -- the
+    raw file is far too large to hand to a model), and asks a separate model what the
+    human should change about the setup. One session, one hint, then the cycle ends:
+    the scan interval is the cadence, and the stream stays a slow drip of single
+    lines.
+
+    The audience is the human, not the agent: the waste in the trace is the symptom,
+    and the hint is the mechanism that removes it -- a skill, a hook, a subagent, a
+    permission rule, a different opening prompt. Advice the agent would have to act on
+    is worthless here, and a new CLAUDE.md rule is charged against every future
+    session, so the hinter is given an inventory of the existing setup and told that
+    saying nothing is the common right answer. The hint prints inline into the
+    monitoring tab; there is no other delivery.
+
+    A session is looked at again once HINT_MIN_NEW_BYTES of fresh transcript exist, so
+    consecutive cycles see genuinely new work; the last HINT_RECENT_MEMORY hints are
+    replayed to the hinter so it cannot rephrase advice already sent. State is
+    persisted to HINT_STATE_FILE, so the monitor's frequent self-supersede restarts
+    neither re-hint covered history nor forget what was already said.
+
+    The analysis blocks the (single-threaded) scheduler for up to HINT_TIMEOUT, which
+    one-per-cycle also bounds. Re-arms every HISTORY_SCAN_INTERVAL.
+    """
+
+    priority = 5
+
+    def __init__(self, scheduler: sched.scheduler) -> None:
+        super().__init__(scheduler)
+        self.state = _load_json(HINT_STATE_FILE, {})
+        if not isinstance(self.state, dict):
+            self.state = {}
+
+    def fire(self) -> None:
+        try:
+            self._scan()
+        except Exception as exc:  # keep the loop alive across transient failures
+            print(f"monitor: history hint scan failed: {exc}", file=sys.stderr)
+        self.arm(HISTORY_SCAN_INTERVAL)
+
+    def _candidates(self) -> list:
+        """Transcripts of sessions coding *right now*, most recently active first.
+
+        A transcript's mtime is the session's pulse: the harness appends an entry per
+        step, so a file written in the last HISTORY_ACTIVE_WINDOW means an agent is
+        mid-work, and one that stopped growing means the session ended or is parked
+        waiting on the user. Only the live ones qualify -- a hint is worth sending
+        when it can still change how the work goes; hinting a session that has
+        stopped is advice about something already over.
+
+        Newest first because the cycle hints the single most recent session; the rest
+        of the list is only a fallback for when that one turns out to be unreadable.
+
+        Cheap filters only (mtime, size against the recorded mark) -- reading and
+        distilling happens per analysis, so a scan over hundreds of transcripts
+        stays a stat() walk.
+        """
+        now = time.time()
+        out = []
+        for path in CLAUDE_PROJECTS_DIR.glob("*/*.jsonl"):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if now - st.st_mtime > HISTORY_ACTIVE_WINDOW:
+                continue  # not being written to -- nobody is coding in this session
+            prev = self.state.get(str(path)) or {}
+            if st.st_size - (prev.get("size") or 0) < HINT_MIN_NEW_BYTES:
+                continue  # no new history, so nothing new to say about it
+            out.append((st.st_mtime, st.st_size, path))
+        out.sort(reverse=True)
+        return out
+
+    def _scan(self) -> None:
+        """Hint the most recently active session, once, and stop.
+
+        One session per cycle: the scan interval is the cadence, so the stream stays a
+        slow drip of single lines rather than a wall of advice. `NONE` from the hinter
+        ends the cycle too -- we do not go shopping through older sessions for
+        something to say. The loop past the first candidate only covers transcripts
+        that cannot be analyzed at all (a headless agent's, or too little work in the
+        window), which should not silently consume the cycle.
+        """
+        now = time.time()
+        # Bound the state file: drop transcripts we will never look at again.
+        self.state = {
+            k: v for k, v in self.state.items()
+            if now - (v.get("hinted_at") or 0) < HINT_STATE_TTL
+        }
+        for _, size, path in self._candidates()[:HISTORY_READS_PER_SCAN]:
+            key = str(path)
+            recent = list((self.state.get(key) or {}).get("recent") or [])
+            # Mark examined before the slow analysis, so a crash cannot wedge the queue.
+            self.state[key] = {"size": size, "hinted_at": now, "recent": recent}
+            _save_json(HINT_STATE_FILE, self.state)
+            hints = self._analyze(path, recent)
+            if hints is None:
+                continue  # unreadable session: fall through to the next-most-recent
+            if hints:
+                self.state[key]["recent"] = (recent + hints)[-HINT_RECENT_MEMORY:]
+                _save_json(HINT_STATE_FILE, self.state)
             return
-        self.launched.add(key)
-        project = _pr_project(pr)
-        _deliver_pr_read(project, pr["number"], text)  # pre-seed the new inbox
-        _write_pr_meta(project, pr)
-        _open_pr_console(pr, project)
+
+    def _analyze(self, path: Path, recent: list):
+        """Hint on one transcript: the hints sent (possibly none), or None if unreadable.
+
+        `recent` is what this session was already told, replayed to the hinter so a
+        cycle five minutes later does not rephrase the same advice over an overlapping
+        window.
+        """
+        entries, session_start, cwd, interactive = _read_transcript(path)
+        if not interactive or not entries:
+            return None  # a headless reviewer/hinter run, or nothing to read
+        stats, trace, tool_calls = _distill_history(entries)
+        # Growth alone can be one huge tool result or a stretch of conversation.
+        if tool_calls < HINT_MIN_TOOL_CALLS or not trace.strip():
+            return None
+        try:
+            instructions = HINT_DOC.read_text()
+        except OSError:
+            instructions = (
+                "You are reading a distilled trace of a Claude Code session. Your "
+                "reader is the human running it, not the agent: say which Claude Code "
+                "capability -- a skill, hook, subagent, slash command, permission rule, "
+                "background task, or a different opening prompt -- would remove the "
+                "waste you see. Never address the agent, and never propose CLAUDE.md "
+                "prompt text unless the agent hits it often and gets it wrong often, "
+                "since prompt text is paid on every future session. First line exactly "
+                "NONE if nothing is worth the reader's attention (the common answer); "
+                "otherwise exactly one hint, a single `- ` bullet fitting one "
+                "140-character terminal line, recommendation first: `do X: because Y`."
+            )
+        project = _history_project(session_start, cwd, path)
+        already = ""
+        if recent:
+            already = (
+                "===== already sent to this reader =====\n"
+                "Do not repeat or rephrase any of these; find something else or say NONE.\n"
+                + "\n".join(f"- {h}" for h in recent) + "\n\n"
+            )
+        out = _run_hinter(
+            f"{instructions}\n\n"
+            f"===== session =====\nproject: {project}\ntranscript: {path.name}\n\n"
+            f"===== existing setup =====\n{_setup_inventory(project)}\n\n"
+            f"{already}"
+            f"===== statistics =====\n{stats}\n\n"
+            f"===== recent steps =====\n{trace}\n"
+        )
+        if out is None:
+            print(f"monitor: hinter unavailable for {path.name}", file=sys.stderr)
+            return None
+        first = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
+        if first.upper().startswith("NONE"):
+            return []  # ran, found nothing worth saying: the cycle is spent
+        hints = _hint_lines(out)
+        for hint in hints:
+            _notify(f"hint {project}", hint)
+        return hints
 
 
 def main() -> int:
     _supersede_incumbent()
     PIDFILE.write_text(str(os.getpid()))
+    _ensure_monitor_tab()  # the tab that tails every notification line
     try:
         scheduler = sched.scheduler(time.time, time.sleep)
         ScanMonitoringEvent(scheduler).arm(0)  # pending-monitoring -> pending-reads
         PullRequestsEvent(scheduler).arm(0)    # open PRs -> notify + per-PR console
+        HistoryHintsEvent(scheduler).arm(0)    # agent history -> optimization hints
         # Recurring events re-arm themselves, so the queue never empties and run()
         # blocks forever -- until the process is killed.
         scheduler.run()
