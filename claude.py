@@ -84,39 +84,65 @@ def real_gh_config() -> str:
 
 
 def stage_gnupg() -> str:
-    """Copy the host GPG keyring to a private dir and return its path.
+    """Refresh the host GPG keyring copy in place and return its path.
 
     gpg needs a writable GNUPGHOME even to read the keyring (it writes a lockfile
     and trustdb), so a read-only mount cannot sign. Mounting a copy (rw) instead
     of ~/.gnupg lets the container sign commits and write its own agent sockets
-    without being able to modify the host keyring. Refreshed each launch; agent
-    sockets and lockfiles are skipped (uncopyable / stale).
+    without being able to modify the host keyring.
+
+    Update the files IN PLACE -- never delete this dir. A relaunch used to rmtree
+    it first, but that unlinks the directory inode, which breaks the bind mount of
+    any container still running against this path: its ~/.gnupg vanishes mid-session
+    (the container stays pinned to the dead inode and never sees the recreated dir).
+    Overwriting files under the same dir keeps the inode, so live mounts survive.
+    Sockets/locks are skipped -- uncopyable, and a concurrent session's live agent
+    socket must not be clobbered.
     """
     src = HOME / ".gnupg"
     dest = APP_DIR / "gnupg"
-    if dest.exists():
-        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
-        shutil.copytree(src, dest, ignore=shutil.ignore_patterns("S.*", "*.lock", ".#*"))
-    else:
-        dest.mkdir(parents=True)
+        shutil.copytree(
+            src, dest, dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("S.*", "*.lock", ".#*"),
+        )
     dest.chmod(0o700)
     return str(dest)
 
 
-def read_keychain_api_key() -> bytes:
-    """Read the Claude Code API key from the macOS login Keychain."""
+def oauth_blob(blob: bytes) -> bytes | None:
+    """Return blob (newline-terminated) if it is the OAuth credential JSON, else None."""
     try:
-        proc = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code", "-w"],
-            capture_output=True, check=True,
-        )
-    except subprocess.CalledProcessError:
+        parsed = json.loads(blob)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or "claudeAiOauth" not in parsed:
+        return None
+    return blob + b"\n"
+
+
+def read_credentials(creds_file: Path) -> bytes:
+    """Return the Claude Code OAuth credential JSON, Keychain first, then creds_file.
+
+    The host CLI does not always keep the credential in the Keychain -- it may write
+    ~/.claude/.credentials.json directly, leaving the Keychain item absent or holding
+    stale pre-OAuth data, so a bad Keychain read is not fatal on its own.
+    """
+    proc = subprocess.run(
+        ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        capture_output=True,
+    )
+    blob = oauth_blob(proc.stdout.strip()) if proc.returncode == 0 else None
+    if blob is None and creds_file.exists():
+        blob = oauth_blob(creds_file.read_bytes().strip())
+    if blob is None:
         sys.exit(
-            "error: could not read 'Claude Code' credential from the macOS Keychain.\n"
-            "       Log in on the host first (run 'claude' and authenticate), then retry."
+            "error: no Claude Code OAuth credential found -- neither the\n"
+            "       'Claude Code-credentials' Keychain item nor ~/.claude/.credentials.json\n"
+            "       holds the expected JSON. Authenticate on the host with 'claude', then retry."
         )
-    return proc.stdout
+    return blob
 
 
 def pull_toolkit() -> None:
@@ -190,16 +216,20 @@ def main() -> None:
     if not claude_json.exists():
         claude_json.write_text("{}")
 
-    # macOS keeps the Claude Code credential in the login Keychain, not on disk.
-    # This account uses a raw API key (not OAuth), so drop it into a 0600 file that
-    # apiKeyHelper reads -- the key never enters the env or `docker inspect`.
-    key_file = APP_DIR / "anthropic-key"
+    # macOS may keep the Claude Code credential in the login Keychain, which the Linux
+    # container cannot reach; on Linux the CLI reads ~/.claude/.credentials.json
+    # instead. Materialize the OAuth JSON there (0600) -- ~/.claude is mounted rw
+    # below, so the container authenticates with no key in the env or in
+    # `docker inspect`, and can refresh the access token in place when it expires.
+    creds_file = HOME / ".claude" / ".credentials.json"
+    creds_file.parent.mkdir(parents=True, exist_ok=True)
+    creds = read_credentials(creds_file)
     old_umask = os.umask(0o077)
     try:
-        key_file.write_bytes(read_keychain_api_key())
+        creds_file.write_bytes(creds)
     finally:
         os.umask(old_umask)
-    key_file.chmod(0o600)
+    creds_file.chmod(0o600)
 
     # GitHub auth: the working session uses the host's real token (auto mode gates
     # dangerous writes; the token lets routine writes execute). The gh config dir
@@ -253,7 +283,6 @@ def main() -> None:
     append_prompt = f"{generic_prompt}\n\n{mode_prompt}"
 
     settings = {
-        "apiKeyHelper": "cat /home/ubuntu/.config/claude-toolkit/anthropic-key",
         "theme": "dark",
         "hooks": {
             "SessionStart": [
@@ -326,14 +355,13 @@ def main() -> None:
         # ~/.config/claude-toolkit/project/, so the hooks see project/pending-reads/...
         # with no project name. It is a fresh subtree -- nothing else mounts under it --
         # so it sidesteps the Docker Desktop virtiofs failure you get from mounting
-        # proj_dir AS ~/.config/claude-toolkit and nesting anthropic-key/hooks/modes on top.
+        # proj_dir AS ~/.config/claude-toolkit and nesting hooks/modes on top.
         "-v", f"{proj_dir}:/home/ubuntu/.config/claude-toolkit/project:rw",
         # Global writes log (all projects) so capture_writes records here and the
         # --review session reads one consolidated list.
         "-v", f"{writes_log}:/home/ubuntu/.config/claude-toolkit/writes-log:rw",
         # --review only: every project's dir (meta.json + per-PR checkouts).
         *review_mount,
-        "-v", f"{APP_DIR}/anthropic-key:/home/ubuntu/.config/claude-toolkit/anthropic-key:ro",
         # Private copy of the GPG keyring so the container can sign commits without
         # touching the host keyring.
         "-v", f"{gnupg_copy}:/home/ubuntu/.gnupg:rw",

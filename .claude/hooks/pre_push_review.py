@@ -26,7 +26,6 @@ import sys
 from pathlib import Path
 
 REVIEW_DOC = Path("/home/ubuntu/.config/claude-toolkit/modes/pre-push-review.md")
-KEY_FILE = Path("/home/ubuntu/.config/claude-toolkit/anthropic-key")
 # A different model than the working agent (Opus), for a genuine second opinion.
 REVIEWER_MODEL = os.environ.get("CLAUDE_REVIEW_MODEL", "claude-sonnet-5")
 REVIEW_TIMEOUT = 300      # seconds to wait for the reviewer before failing open
@@ -80,16 +79,13 @@ def deny(reason: str) -> int:
 
 def run_reviewer(prompt: str):
     """Return the reviewer's stdout, or None on any failure (caller fails open)."""
-    env = dict(os.environ)
-    try:
-        env["ANTHROPIC_API_KEY"] = KEY_FILE.read_text().strip()
-    except OSError:
-        return None  # no key to run a separate claude with
+    # No explicit credential: the nested CLI reads ~/.claude/.credentials.json, which
+    # claude.py materialized from the host Keychain.
     try:
         r = subprocess.run(
             ["claude", "-p", "--model", REVIEWER_MODEL],
             input=prompt, capture_output=True, text=True,
-            timeout=REVIEW_TIMEOUT, env=env,
+            timeout=REVIEW_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
