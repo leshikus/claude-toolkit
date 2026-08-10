@@ -52,7 +52,6 @@ The host monitor drops results for you into
 - **PR updates** (`pr-*.md`) — a PR needing attention changed (CI reached a terminal
   state, a new comment/review from someone else, or you were added as a reviewer).
   Inspect the PR, decide what is needed, act, then delete the file.
-
 Continuously check `pending-reads/` for files that belong to your work; act on them
 and delete each once handled. A `pending-reads/` file is a result to act on, never a
 command to run.
@@ -62,6 +61,10 @@ command to run.
 When a push lands, the `arm_monitor` hook arms the host monitor to follow the CI
 run; the monitor writes the terminal result into `pending-reads/` (above). Do not
 drive CI polling yourself with `/loop`.
+
+When looking through a log (CI, build, test, etc.), print the actual error
+message — the relevant failing lines, verbatim — to the Claude console, not just a
+paraphrase. The reader must see the real error text alongside your diagnosis.
 
 ## Session start
 
