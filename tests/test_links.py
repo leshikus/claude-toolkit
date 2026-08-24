@@ -23,7 +23,7 @@ PR_URL = "https://github.com/ClickHouse/ClickHouse/pull/7"
 RUN_URL = "https://github.com/ClickHouse/ClickHouse/actions/runs/12345"
 PR_TITLE = "Fix the flaky DistributedCache test"
 RUN_TITLE = "Rerun after the rebase"
-PR_LINK = Hyperlink.format(PR_TITLE, PR_URL)
+PR_LINK = Hyperlink.plain(PR_TITLE, PR_URL)
 TITLES = {"/repos/ClickHouse/ClickHouse/issues/7": {"title": PR_TITLE},
           "/repos/ClickHouse/ClickHouse/actions/runs/12345": {"display_title": RUN_TITLE}}
 
@@ -91,14 +91,14 @@ class ChatLinksTest(unittest.TestCase):
         self.started()
         self.append(assistant(f"CI failed: {RUN_URL} — the PR is {PR_URL}"))
         out = self.scan()
-        self.assertIn(Hyperlink.format(RUN_TITLE, RUN_URL), out)
+        self.assertIn(Hyperlink.plain(RUN_TITLE, RUN_URL), out)
         self.assertIn(PR_LINK, out)
         self.assertIn("/Users/x/repos/cr26.6 —", out)  # the directory the chat runs in
 
     def test_an_unreadable_item_falls_back_to_what_it_refers_to(self):
         self.started()
         self.append(assistant("see https://github.com/o/r/pull/9"))
-        self.assertIn(Hyperlink.format("PR o/r#9", "https://github.com/o/r/pull/9"), self.scan())
+        self.assertIn(Hyperlink.plain("PR o/r#9", "https://github.com/o/r/pull/9"), self.scan())
 
     def test_a_pasted_link_counts_as_mentioned(self):
         self.started()
@@ -180,13 +180,13 @@ class PrActivityLinkTest(unittest.TestCase):
         self.event.state[self.KEY] = {"action": None}
         self.event._dispatch(self.KEY, self.pr(), ["CI failure", "new comment/review"], {})
         out = self.log.read_text()
-        self.assertIn(Hyperlink.format("PR #7: Fix the changelog check", PR_URL), out)
+        self.assertIn(Hyperlink.plain("PR #7: Fix the changelog check", PR_URL), out)
         self.assertIn("CI failure; new comment/review", out)
 
     def test_an_action_required_change_is_still_marked(self):
         self.event.state[self.KEY] = {"action": "review requested"}
         self.event._dispatch(self.KEY, self.pr(), ["added as reviewer"], {})
-        self.assertIn("⚠ \x1b]8;;", self.log.read_text())
+        self.assertIn("⚠ PR #7:", self.log.read_text())
 
 
 if __name__ == "__main__":

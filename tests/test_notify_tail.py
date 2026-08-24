@@ -18,11 +18,13 @@ class NotifyTailTest(unittest.TestCase):
         app = home / ".config" / "claude-toolkit"
         (app / "project").mkdir(parents=True)
         self.log = app / "notifications.log"
+        self.picks = app / "backlog-picks.txt"
         self.state = app / "project" / "notify-tail.json"
         spec = importlib.util.spec_from_file_location("notify_tail", HOOK)
         self.hook = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.hook)
         self.hook.NOTIFY_LOG = self.log
+        self.hook.PICKS_FILE = self.picks
         self.hook.STATE_FILE = self.state
 
     def run_hook(self) -> str:
@@ -61,6 +63,32 @@ class NotifyTailTest(unittest.TestCase):
         self.log.write_text("".join(f"line {i}\n" for i in range(100)))
         printed = self.run_hook().splitlines()[1:]
         self.assertEqual(printed, [f"line {i}" for i in range(100 - self.hook.TAIL_LINES, 100)])
+
+    def test_the_picks_print_as_their_own_section(self):
+        self.picks.write_text("oldest — A (u1)\nhighest — B (u2)\n")
+        out = self.run_hook()
+        self.assertIn("=== backlog ===\noldest — A (u1)\nhighest — B (u2)", out)
+
+    def test_a_changed_pick_speaks_even_though_the_log_is_quiet(self):
+        self.log.write_text("first\n")
+        self.picks.write_text("oldest — A (u1)\n")
+        self.run_hook()
+        self.state.write_text(self.hook.json.dumps(
+            {"at": 1, "size": 6, "picks": "oldest — A (u1)"}))
+        self.assertEqual(self.run_hook(), "")   # nothing moved
+        self.picks.write_text("oldest — B (u2)\n")
+        self.assertIn("oldest — B (u2)", self.run_hook())
+
+    def test_the_picks_repeat_with_each_replay_rather_than_stacking_up(self):
+        """They are state: the current pair, not one line per selection cycle."""
+        self.picks.write_text("oldest — A (u1)\n")
+        self.log.write_text("first\n")
+        first = self.run_hook()
+        self.state.write_text(self.hook.json.dumps({"at": 1, "size": 6, "picks": ""}))
+        self.log.write_text("first\nsecond\n")
+        second = self.run_hook()
+        for out in (first, second):
+            self.assertEqual(out.count("oldest — A (u1)"), 1)
 
     def test_stamp_records_the_size_it_printed(self):
         self.log.write_text("first\n")

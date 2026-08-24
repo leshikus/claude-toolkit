@@ -289,6 +289,8 @@ def main() -> None:
     # a file rather than a new root-owned directory.
     notify_log = APP_DIR / "notifications.log"
     notify_log.touch()
+    picks_file = APP_DIR / "backlog-picks.txt"
+    picks_file.touch()
     # Merge, not overwrite: preserve a `pr` claim the monitor (or a prior
     # session_start) recorded, so an open PR stays associated with this project.
     meta_file = proj_dir / "meta.json"
@@ -465,6 +467,7 @@ def main() -> None:
         "-v", f"{writes_log}:/home/ubuntu/.config/claude-toolkit/writes-log:rw",
         # The monitor's notification log, replayed into the session by notify_tail.
         "-v", f"{notify_log}:/home/ubuntu/.config/claude-toolkit/notifications.log:ro",
+        "-v", f"{picks_file}:/home/ubuntu/.config/claude-toolkit/backlog-picks.txt:ro",
         # --review only: every project's dir (meta.json + per-PR checkouts).
         *review_mount,
         # Private copy of the GPG keyring so the container can sign commits without

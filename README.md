@@ -35,14 +35,14 @@ checkout it was launched from), and the link text is the item's title read from
 GitHub — a URL says only where a thing lives:
 
 ```
-09:02:18  ~/repos/master-push — Push the release changelog and version bump to master
-09:02:18  ~/repos/cr26.6 — CreateRelease
+09:02:18  ~/repos/master-push — Push the release changelog and version bump to master (https://github.com/ClickHouse/ClickHouse/pull/113528)
+09:02:18  ~/repos/cr26.6 — CreateRelease (https://github.com/ClickHouse/ClickHouse/actions/runs/32462474552)
 ```
 
-`term.py` renders these as OSC 8 terminal hyperlinks, falling back to the plain URL
-wherever an escape would not be rendered, and owns every call to the terminal
-application itself — the per-PR consoles the monitor opens — behind one `Term`
-instance detected per host (iTerm2 today).
+The URL is written out rather than hidden behind an OSC 8 escape: a Claude Code
+console strips the escape, and with it the link. `term.py` owns both renderings, and
+every call to the terminal application itself — the per-PR consoles the monitor
+opens — behind one `Term` instance detected per host (iTerm2 today).
 
 The monitor also watches how you and the agent are working together, and tells **you**
 which Claude Code capability would make it go better. While a session is actively
@@ -68,13 +68,15 @@ so it has to beat a mechanism that costs nothing until it is used. The hinter is
 an inventory of what you already have configured, and saying nothing is the expected
 answer.
 
-A backlog is read newest-first, so what nobody looks at is the oldest thing in it — and
-that is rarely what matters most. Every 15 minutes the monitor posts both, as links over
-their titles:
+A backlog is read newest-first, so what nobody looks at is the least recently touched
+thing in it — and that is rarely what matters most. Every 15 minutes the monitor picks
+both. They are state, not history: the pair overwrites `backlog-picks.txt` rather than
+adding two more lines to the stream every cycle, and it is reprinted whole each time
+the hook speaks.
 
 ```
-06:00:12  oldest — Make a status for failing ccache
-06:00:12  highest — Rework AutoReleases into a praktika workflow
+oldest — Make a status for failing ccache (https://github.com/ClickHouse/ClickHouse/issues/46502)
+highest — Rework AutoReleases into a praktika workflow (https://github.com/ClickHouse/ClickHouse/issues/85176)
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an

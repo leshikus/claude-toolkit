@@ -130,6 +130,7 @@ ACTIVE_POLL = 60     # how often a deferred event looks to see whether you came 
 # priorities, so a headless `claude` makes them.
 PICKS_DOC = REPO_DIR / ".claude" / "modes" / "backlog-picks.md"  # the generic task
 PICKS_STATE_FILE = APP_DIR / "backlog-picks.json"  # last run, so a restart does not re-run
+PICKS_FILE = APP_DIR / "backlog-picks.txt"  # the current pair, rewritten every cycle
 PICKS = ("oldest", "highest")  # the labels it answers with, and the order they print in
 PICKS_INTERVAL = 900          # seconds between selections
 PICKS_RETRY = 900             # ... but a selection that failed must not cost a whole cycle
@@ -456,6 +457,19 @@ def _notify(title: str, message: str) -> None:
         pass
 
 
+def _write_picks(lines: list) -> None:
+    """Replace the picks file with `lines`.
+
+    The pair is state, not history: re-posting it every cycle filled the stream with
+    the same two items, so what is current overwrites what was. Best-effort; the
+    caller is a scheduler job that must not die on a full disk.
+    """
+    try:
+        PICKS_FILE.write_text("".join(f"{line}\n" for line in lines))
+    except OSError:
+        pass
+
+
 def _load_json(path: Path, default):
     try:
         return json.loads(path.read_text())
@@ -550,10 +564,15 @@ def _meta_pr_claims() -> dict:
 
 
 def _pr_link(pr: dict) -> str:
-    """A PR as an OSC 8 hyperlink over `PR #<n>: <title>`, for the notification log."""
+    """A PR as `PR #<n>: <title> (<url>)`, for the notification log.
+
+    Escape-free on purpose: the log is read by the notify_tail hook and rendered in
+    a Claude Code console, which strips an OSC 8 sequence and with it the URL. Since
+    the tailing terminal tab is gone, nothing downstream renders one.
+    """
     title = _clip(pr.get("title") or "", PR_TITLE_CHARS)
-    return Hyperlink.format(f"PR #{pr['number']}" + (f": {title}" if title else ""),
-                            pr.get("url"))
+    return Hyperlink.plain(f"PR #{pr['number']}" + (f": {title}" if title else ""),
+                           pr.get("url"))
 
 
 _ITEM_RE = re.compile(r"github\.com/([^/]+/[^/]+)/(?:pull|issues)/(\d+)")
@@ -579,7 +598,7 @@ def _item_link(url: str) -> str:
     """
     m = _ITEM_RE.search(url)
     title = _api_title(f"/repos/{m.group(1)}/issues/{m.group(2)}") if m else ""
-    return Hyperlink.format(title, url) if title else url
+    return Hyperlink.plain(title, url) if title else url
 
 
 def _pr_change_text(pr: dict, notes: list) -> str:
@@ -707,7 +726,7 @@ class PullRequestsEvent(Event):
             self.last_digest = now
             lines = [f"{len(prs)} open, {len(action)} action required"]
             for pr, reason in sorted(action, key=lambda pa: _pr_key(pa[0])):
-                link = Hyperlink.format(_pr_key(pr), pr.get("url"))
+                link = Hyperlink.plain(_pr_key(pr), pr.get("url"))
                 lines.append(f"  ⚠ {link} — {reason}")
             _notify("Open pull requests", "\n".join(lines))
 
@@ -1310,10 +1329,7 @@ class PrStartEvent(Event):
     records it in that project's meta.json, so a claim new for a project *is* a
     session starting on that PR -- nothing extra to trigger, and a PR reached by
     any route (manual checkout, `gh pr checkout`, a per-PR console) announces
-    itself. The line is an OSC 8 hyperlink over `PR #<n>: <title>`, built with
-    `Hyperlink.format` rather than `render` because this monitor's own stdout is
-    detached and says nothing about the iTerm2 tab that tails the log and renders
-    the line. Claims are persisted so the frequent self-supersede restarts stay
+    itself. Claims are persisted so the frequent self-supersede restarts stay
     quiet, and a first run with no state at all baselines every existing claim
     silently. Re-arms every PR_START_INTERVAL.
     """
@@ -1535,7 +1551,7 @@ class GithubLinksEvent(Event):
             posted.add(key)
             fresh.append((key, url))
         for _, url in fresh[:LINK_MAX_PER_SCAN]:
-            _notify(mark["dir"], Hyperlink.format(_github_text(url), url))
+            _notify(mark["dir"], Hyperlink.plain(_github_text(url), url))
         if len(fresh) > LINK_MAX_PER_SCAN:
             _notify(mark["dir"],
                     f"{len(fresh) - LINK_MAX_PER_SCAN} more GitHub links mentioned, not shown")
@@ -1612,24 +1628,25 @@ class BacklogPicksEvent(Event):
         _save_json(PICKS_STATE_FILE, {"last_run": when})
 
     def _select(self) -> None:
-        """Ask for the two picks and post them.
+        """Ask for the two picks and record them.
 
         An answer naming no item means nothing is waiting -- a real answer, and the
         cycle is spent on it. A run that fails outright is not: it re-opens the cycle
-        for PICKS_RETRY, and says so in the tab, because a silent failure here is
-        indistinguishable from an empty backlog and this log is the only place the
-        monitor can be heard -- claude.py gives it no stderr.
+        for PICKS_RETRY, and says so in the file, because a silent failure here is
+        indistinguishable from an empty backlog and claude.py gives the monitor no
+        stderr.
         """
         # Marked before the slow call, so a crash mid-run cannot re-run it every restart.
         self._mark(time.time())
         out = _run_claude(PICKS_DOC.read_text(), PICKS_MODEL, PICKS_TIMEOUT, PICKS_TOOLS)
         if out is None:
             self._mark(0)
-            _notify(PICKS[0], f"selector did not answer; retrying in {PICKS_RETRY // 60} min")
+            _write_picks([f"{PICKS[0]} — selector did not answer; "
+                          f"retrying in {PICKS_RETRY // 60} min"])
             return
         picks = _picks(out)
-        for url in sorted(picks, key=lambda u: PICKS.index(picks[u][0])):
-            _notify(" + ".join(picks[url]), _item_link(url))
+        _write_picks([f"{' + '.join(picks[url])} — {_item_link(url)}"
+                      for url in sorted(picks, key=lambda u: PICKS.index(picks[u][0]))])
 
 
 def main() -> int:
