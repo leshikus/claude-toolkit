@@ -90,6 +90,17 @@ class NotifyTailTest(unittest.TestCase):
         for out in (first, second):
             self.assertEqual(out.count("oldest — A (u1)"), 1)
 
+    def test_a_url_gets_a_row_to_itself(self):
+        self.log.write_text("12:00:00  ~/repos/x — A title (https://github.com/o/r/pull/7)\n")
+        self.assertEqual(self.run_hook().splitlines()[1:],
+                         ["12:00:00  ~/repos/x — A title",
+                          "    https://github.com/o/r/pull/7"])
+
+    def test_a_line_without_a_url_stays_one_row(self):
+        self.log.write_text("12:00:00  hint x — Install node in this environment\n")
+        self.assertEqual(self.run_hook().splitlines()[1:],
+                         ["12:00:00  hint x — Install node in this environment"])
+
     def test_stamp_records_the_size_it_printed(self):
         self.log.write_text("first\n")
         self.run_hook()
