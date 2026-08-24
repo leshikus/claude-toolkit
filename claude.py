@@ -193,6 +193,10 @@ def main() -> None:
     # separate --review session walks one list.
     writes_log = APP_DIR / "writes-log"
     writes_log.mkdir(parents=True, exist_ok=True)
+    # notify_tail reads the monitor's log; create it so the bind mount below attaches
+    # a file rather than a new root-owned directory.
+    notify_log = APP_DIR / "notifications.log"
+    notify_log.touch()
     # Merge, not overwrite: preserve a `pr` claim the monitor (or a prior
     # session_start) recorded, so an open PR stays associated with this project.
     meta_file = proj_dir / "meta.json"
@@ -257,6 +261,7 @@ def main() -> None:
     capture_script = "/home/ubuntu/.config/claude-toolkit/hooks/capture_writes.py"
     session_start_script = "/home/ubuntu/.config/claude-toolkit/hooks/session_start.py"
     arm_monitor_script = "/home/ubuntu/.config/claude-toolkit/hooks/arm_monitor.py"
+    notify_tail_script = "/home/ubuntu/.config/claude-toolkit/hooks/notify_tail.py"
     # Mount the current directory at the fixed /home/ubuntu/project and work there.
     # The container is project-agnostic: no repo name appears in any container path
     # (the name lives only host-side, under projects/<name>/). No ~/repos assumption;
@@ -288,6 +293,15 @@ def main() -> None:
             "SessionStart": [
                 {
                     "hooks": [{"type": "command", "command": f"python3 {session_start_script}"}],
+                }
+            ],
+            # At the start of a turn: replay the tail of the host monitor's
+            # notification log, which the container cannot see (it is tailed in an
+            # iTerm tab on the host). The hook throttles itself to one print per
+            # 5 minutes.
+            "UserPromptSubmit": [
+                {
+                    "hooks": [{"type": "command", "command": f"python3 {notify_tail_script}"}],
                 }
             ],
             # Before a Bash command runs: pre_push_review gates a `git push` on a
@@ -360,6 +374,8 @@ def main() -> None:
         # Global writes log (all projects) so capture_writes records here and the
         # --review session reads one consolidated list.
         "-v", f"{writes_log}:/home/ubuntu/.config/claude-toolkit/writes-log:rw",
+        # The monitor's notification log, replayed into the session by notify_tail.
+        "-v", f"{notify_log}:/home/ubuntu/.config/claude-toolkit/notifications.log:ro",
         # --review only: every project's dir (meta.json + per-PR checkouts).
         *review_mount,
         # Private copy of the GPG keyring so the container can sign commits without
