@@ -2,7 +2,7 @@
 
 Pick two items out of everything waiting on the user, and answer with their URLs:
 
-- **oldest** — the one that has been waiting longest.
+- **oldest** — the one nothing has happened to for the longest.
 - **highest** — the one worth doing first.
 
 They are often not the same item, and that contrast is the point: a backlog is read
@@ -26,8 +26,11 @@ Read-only. Query, do not comment, label, close, or push anything.
 
 ## Choosing each one
 
-**oldest** is measured from when the item was created, not from its last update: a
-stale item someone bumped yesterday has still been waiting since the day it was opened.
+**oldest** is measured from the item's last activity, not from when it was created.
+An item somebody commented on last week is being looked at, however long ago it was
+opened; the one to surface is the one nothing has happened to — no comment, no review,
+no push, no label — for the longest. Creation date picks the same ancient issue every
+cycle no matter who touched it yesterday, which is the opposite of neglect.
 
 **highest** is a judgment, so make it on what the item costs and unblocks, not on how
 loud it looks. What is holding up other work, what has someone actively waiting on a
