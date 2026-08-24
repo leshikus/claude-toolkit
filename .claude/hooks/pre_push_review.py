@@ -77,15 +77,23 @@ def deny(reason: str) -> int:
     return 0
 
 
+API_KEY_FILE = Path("/home/ubuntu/.config/claude-toolkit/anthropic-key")
+
+
 def run_reviewer(prompt: str):
     """Return the reviewer's stdout, or None on any failure (caller fails open)."""
-    # No explicit credential: the nested CLI reads ~/.claude/.credentials.json, which
-    # claude.py materialized from the host Keychain.
+    # On an OAuth host the nested CLI needs no credential: it reads the same
+    # ~/.claude/.credentials.json this session authenticated with. An API-key host has
+    # no such file, and apiKeyHelper reaches this child through neither --settings nor
+    # the mounted ~/.claude/settings.json, so hand it the key directly.
+    env = dict(os.environ)
+    if API_KEY_FILE.exists():
+        env["ANTHROPIC_API_KEY"] = API_KEY_FILE.read_text().strip()
     try:
         r = subprocess.run(
             ["claude", "-p", "--model", REVIEWER_MODEL],
             input=prompt, capture_output=True, text=True,
-            timeout=REVIEW_TIMEOUT,
+            timeout=REVIEW_TIMEOUT, env=env,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None

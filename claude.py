@@ -34,6 +34,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 IMAGE = "claude-toolkit:latest"
@@ -42,6 +43,7 @@ HOME = Path.home()
 # All of our runtime state lives here (mounted into the container), kept out of
 # Claude Code's own ~/.claude.
 APP_DIR = HOME / ".config" / "claude-toolkit"
+WORKDIR = "/home/ubuntu/project"  # the fixed container path this repo is mounted at
 
 
 def real_gh_config() -> str:
@@ -122,27 +124,117 @@ def oauth_blob(blob: bytes) -> bytes | None:
     return blob + b"\n"
 
 
-def read_credentials(creds_file: Path) -> bytes:
-    """Return the Claude Code OAuth credential JSON, Keychain first, then creds_file.
+def expires_at(blob: bytes) -> int:
+    """When the access token in `blob` dies, ms since the epoch; 0 if it does not say."""
+    return (json.loads(blob).get("claudeAiOauth") or {}).get("expiresAt") or 0
 
-    The host CLI does not always keep the credential in the Keychain -- it may write
-    ~/.claude/.credentials.json directly, leaving the Keychain item absent or holding
-    stale pre-OAuth data, so a bad Keychain read is not fatal on its own.
+
+def read_credentials(creds_file: Path) -> bytes | None:
+    """The live Claude Code OAuth credential: the Keychain or creds_file, later expiry wins.
+
+    Neither source is authoritative. The host CLI does not always keep the credential
+    in the Keychain -- it may write ~/.claude/.credentials.json directly -- and once a
+    session is running only that file is refreshed, so a Keychain item left behind
+    days ago has silently outranked a live file here.
     """
     proc = subprocess.run(
         ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
         capture_output=True,
     )
-    blob = oauth_blob(proc.stdout.strip()) if proc.returncode == 0 else None
-    if blob is None and creds_file.exists():
-        blob = oauth_blob(creds_file.read_bytes().strip())
-    if blob is None:
+    found = [oauth_blob(proc.stdout.strip())] if proc.returncode == 0 else []
+    if creds_file.exists():
+        found.append(oauth_blob(creds_file.read_bytes().strip()))
+    blobs = [b for b in found if b and expires_at(b) > time.time() * 1000]
+    return max(blobs, key=expires_at) if blobs else None
+
+
+def read_api_key() -> str:
+    """The Anthropic API key in the 'Claude Code' Keychain item, "" if there is none.
+
+    Separate from the OAuth item: `/login` stores one or the other, and switching an
+    account from a subscription to an API key zeroes 'Claude Code-credentials' and
+    writes the key here instead. The host CLI then authenticates with the key while
+    the OAuth JSON stays `{}` forever.
+    """
+    proc = subprocess.run(
+        ["security", "find-generic-password", "-s", "Claude Code", "-w"], capture_output=True)
+    key = proc.stdout.strip().decode(errors="replace") if proc.returncode == 0 else ""
+    return key if key.startswith("sk-ant-") else ""
+
+
+def stage_credentials():
+    """Stage what the container authenticates with. Returns ("oauth"|"apikey", path).
+
+    OAuth first, the API key the host CLI is using as the fallback -- `/login` stores
+    one or the other, so a host switched to an API key leaves the OAuth JSON `{}`
+    forever and only the key works.
+
+    The OAuth copy is per-container on purpose: Claude Code rewrites
+    .credentials.json in place as it refreshes, a rejected refresh leaves `{}`
+    behind, and sharing the host's file over the rw ~/.claude mount let one container
+    wipe the host login and every other container with it.
+    """
+    creds = read_credentials(HOME / ".claude" / ".credentials.json")
+    key = "" if creds else read_api_key()
+    if not creds and not key:
         sys.exit(
-            "error: no Claude Code OAuth credential found -- neither the\n"
-            "       'Claude Code-credentials' Keychain item nor ~/.claude/.credentials.json\n"
-            "       holds the expected JSON. Authenticate on the host with 'claude', then retry."
+            "error: the host has no usable Claude Code credential. Neither an unexpired\n"
+            "       OAuth login ('Claude Code-credentials' Keychain item or\n"
+            "       ~/.claude/.credentials.json) nor an API key ('Claude Code' Keychain\n"
+            "       item) was found. Authenticate on the host with 'claude', then retry."
         )
-    return blob
+    kind = "oauth" if creds else "apikey"
+    path = APP_DIR / ("container-credentials.json" if creds else "anthropic-key")
+    old_umask = os.umask(0o077)
+    try:
+        path.write_bytes(creds or key.encode() + b"\n")
+    finally:
+        os.umask(old_umask)
+    path.chmod(0o600)
+    return kind, path
+
+
+def stage_claude_json() -> Path:
+    """The container's own ~/.claude.json, with WORKDIR pre-trusted. Returns its path.
+
+    Onboarding state (theme, per-project trust) lives in ~/.claude.json -- a file in
+    $HOME, not inside ~/.claude. Mounting the host's copy rw used to share it with
+    whatever Claude Code session is running on the host, so two processes
+    read-modify-wrote one 40 KB document at once and it periodically came back
+    truncated. A container then found no trust flag for its workdir and stopped on a
+    prompt with nobody to answer it. This copy is the container's alone.
+
+    Anything unparseable is discarded rather than repaired: the file is a cache of
+    onboarding answers, and re-seeding it from the host costs one launch. The trust
+    flag is re-asserted every run, so a corrupted file on either side heals by itself.
+    """
+    path = APP_DIR / "container-claude.json"
+    data = read_json(path)
+    if not data:  # first run, or the previous file was corrupt
+        host = read_json(HOME / ".claude.json")
+        data = {k: host[k] for k in ("userID", "oauthAccount") if k in host}
+        data["hasCompletedOnboarding"] = True
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        projects = data["projects"] = {}
+    entry = projects.get(WORKDIR)
+    if not isinstance(entry, dict):
+        entry = projects[WORKDIR] = {}
+    entry["hasTrustDialogAccepted"] = True
+    entry["hasCompletedProjectOnboarding"] = True
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.replace(path)  # atomic, so a launch interrupted here cannot leave a partial file
+    return path
+
+
+def read_json(path: Path) -> dict:
+    """Parsed JSON object at `path`; {} if it is missing, unreadable or not an object."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def pull_toolkit() -> None:
@@ -213,27 +305,19 @@ def main() -> None:
     # the build context changed, and it picks up Dockerfile edits.
     subprocess.run(["docker", "build", "-t", IMAGE, str(REPO_DIR)], check=True)
 
-    # Persist onboarding state (theme, per-project trust). This lives in
-    # ~/.claude.json (a file in $HOME, not inside ~/.claude); ensure it exists so the
-    # bind mount attaches a file, not a new empty directory.
-    claude_json = HOME / ".claude.json"
-    if not claude_json.exists():
-        claude_json.write_text("{}")
+    claude_json = stage_claude_json()
 
     # macOS may keep the Claude Code credential in the login Keychain, which the Linux
     # container cannot reach; on Linux the CLI reads ~/.claude/.credentials.json
-    # instead. Materialize the OAuth JSON there (0600) -- ~/.claude is mounted rw
-    # below, so the container authenticates with no key in the env or in
-    # `docker inspect`, and can refresh the access token in place when it expires.
-    creds_file = HOME / ".claude" / ".credentials.json"
-    creds_file.parent.mkdir(parents=True, exist_ok=True)
-    creds = read_credentials(creds_file)
-    old_umask = os.umask(0o077)
-    try:
-        creds_file.write_bytes(creds)
-    finally:
-        os.umask(old_umask)
-    creds_file.chmod(0o600)
+    # instead. Staged as this container's own copy and mounted over that path below, so
+    # it authenticates with no key in the env or in `docker inspect`, refreshes in
+    # place, and cannot take the host login down with it.
+    creds_kind, creds_copy = stage_credentials()
+    # The container CLI reads OAuth from ~/.claude/.credentials.json and an API key
+    # through apiKeyHelper; either way the secret is a mounted file, never an env var
+    # or an argument, so it stays out of `docker inspect`.
+    container_creds = ("/home/ubuntu/.claude/.credentials.json" if creds_kind == "oauth"
+                       else "/home/ubuntu/.config/claude-toolkit/anthropic-key")
 
     # GitHub auth: the working session uses the host's real token (auto mode gates
     # dangerous writes; the token lets routine writes execute). The gh config dir
@@ -267,7 +351,7 @@ def main() -> None:
     # (the name lives only host-side, under projects/<name>/). No ~/repos assumption;
     # the session sees only the checkout it was launched from. (cwd and proj_dir were
     # computed above, with meta.json already recorded.)
-    workdir = "/home/ubuntu/project"
+    workdir = WORKDIR
 
     # Point this session at its role doc (mounted rw under
     # ~/.config/claude-toolkit/modes below, so the agent can refine it). A pointer
@@ -289,6 +373,7 @@ def main() -> None:
 
     settings = {
         "theme": "dark",
+        **({} if creds_kind == "oauth" else {"apiKeyHelper": f"cat {container_creds}"}),
         "hooks": {
             "SessionStart": [
                 {
@@ -352,6 +437,10 @@ def main() -> None:
         # (hooks) and --append-system-prompt (the generic prompt) instead.
         # rw because Claude writes its runtime state (history, projects/, todos/).
         "-v", f"{HOME}/.claude:/home/ubuntu/.claude:rw",
+        # ...except the credential, which is this container's alone (see stage_credentials).
+        # Mounted after ~/.claude: Docker orders bind mounts by destination depth.
+        # rw for OAuth, which the CLI refreshes in place; an API key is only ever read.
+        "-v", f"{creds_copy}:{container_creds}:" + ("rw" if creds_kind == "oauth" else "ro"),
         # Toolkit code lives under ~/.config/claude-toolkit/, referenced by the hook
         # commands and the mode pointer -- kept out of ~/.claude so it shadows nothing.
         # Hooks are read-only; modes are rw so the agent can refine the role docs and
@@ -363,7 +452,7 @@ def main() -> None:
         # (see the write-eacces-mounted-settings note). In auto mode narrow allow rules
         # speed up routine reads; the classifier gates everything else.
         "-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:ro",
-        "-v", f"{HOME}/.claude.json:/home/ubuntu/.claude.json:rw",
+        "-v", f"{claude_json}:/home/ubuntu/.claude.json:rw",
         "-v", f"{HOME}/.gitconfig:/home/ubuntu/.gitconfig:ro",
         # Mount THIS project's own dir (projects/<name>/) at a fixed container path,
         # ~/.config/claude-toolkit/project/, so the hooks see project/pending-reads/...
