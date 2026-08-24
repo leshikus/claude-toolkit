@@ -31,7 +31,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-PR_FIELDS = "number,url,state,isDraft,statusCheckRollup,reviewDecision,mergeable,author"
+PR_FIELDS = "number,title,url,state,isDraft,statusCheckRollup,reviewDecision,mergeable,author"
 
 # Where the rendered orientation is dumped for a human to read (git-ignored via
 # the .claude whitelist). __file__ is .claude/hooks/session_start.py, so
@@ -133,7 +133,9 @@ def record_pr_meta(pr):
 
     The host monitor reads these claims (``pr.key`` = ``owner/name#number``) to route
     a PR change to the project already working on it -- instead of opening a duplicate
-    per-PR console. META_FILE is mounted rw, so the write persists to the host.
+    per-PR console -- and treats a claim new for the project as this session starting
+    on that PR, printing a clickable link to it. META_FILE is mounted rw, so the write
+    persists to the host.
     """
     m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr.get("url") or "")
     if not m:
@@ -150,6 +152,7 @@ def record_pr_meta(pr):
         "repo": f"{owner}/{name}",
         "number": int(number),
         "url": pr.get("url"),
+        "title": pr.get("title"),
     }
     try:
         META_FILE.write_text(json.dumps(data) + "\n")

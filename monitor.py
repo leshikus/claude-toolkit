@@ -3,7 +3,7 @@
 
 A std-lib `sched.scheduler` drives a time-ordered queue of `Event` objects. Each
 event's `fire` does its work and re-arms itself (or schedules other events) on the
-scheduler, so the queue never empties and the loop runs forever. Three recurring
+scheduler, so the queue never empties and the loop runs forever. Six recurring
 events cover the jobs below; the monitoring event schedules a fresh CiWatchEvent
 per request it discovers -- events adding events at runtime:
   1. Service the pending-monitoring queue -- each request (dispatched by `kind`;
@@ -18,7 +18,7 @@ per request it discovers -- events adding events at runtime:
      change that needs your attention -- CI reaching a terminal state, a new
      comment/review from someone else, or a fresh review request. Each change is
      printed to the monitoring tab (an iTerm tab tailing notifications.log, opened on
-     startup) and is handed to an agent: if a project already tracks the
+     startup) as a clickable link to the PR, and is handed to an agent: if a project already tracks the
      PR (its dir exists under projects/, or its meta.json claims it) the change
      lands in that project's pending-reads/; otherwise a per-PR iTerm console is
      opened that clones the PR into projects/pr<N>/repo and starts a session on it.
@@ -43,6 +43,31 @@ per request it discovers -- events adding events at runtime:
      At most two one-line hints print inline in the monitoring tab -- that is the
      whole delivery. Our own headless agents (the pre-push reviewer, this hinter)
      write transcripts into the same dirs and are skipped, so it never feeds itself.
+  4. Print a clickable link to a pull request the moment a session starts working
+     on it. The container's session_start hook records the checked-out branch's PR
+     in the project's meta.json, so a claim that is new for a project is a session
+     starting on that PR; the link is an OSC 8 hyperlink (see term.py) over
+     `PR #<n>: <title>`, opened with Cmd-click in the monitoring tab.
+  5. Post every GitHub link *mentioned in a chat* -- a pull request, an Actions run,
+     an issue, a commit -- into the same tab as a clickable link, so a URL the agent
+     names mid-answer is one Cmd-click away instead of a selection out of a wall of
+     prose. Transcripts are tailed from the offset last read, and only conversation
+     text counts: a tool call or its output would put every `gh` result in the
+     stream.
+  6. Post two picks out of your backlog -- what has waited longest, and what is
+     worth doing first. A backlog is read newest-first, so its oldest item is the one
+     nobody looks at, and that is rarely the one that matters most; printing only one
+     of the two is misleading either way. Both judgments depend on your repositories,
+     your role and your priorities, so they are made by a headless `claude` run from
+     this checkout -- it loads the same always-loaded prompt an interactive session
+     here would, and that is where those rules live. It answers with one labelled URL
+     per line; the titles are read back from GitHub and printed as clickable links.
+
+Every job whose only product is a line for you to read is gated on you being at the
+keyboard (`Event.requires_user`, macOS `HIDIdleTime`): away or asleep, those events
+defer rather than fire, so nothing polls GitHub, spends a model call, or prints into a
+tab nobody is tailing -- and the work is still waiting when you come back. The jobs
+that serve a working agent rather than a reader are never gated.
 
 One instance runs at a time: on startup a new monitor supersedes any running
 one (SIGTERMs the incumbent via the PID file, then claims it), so a relaunch
@@ -65,6 +90,8 @@ import time
 from collections import Counter, deque
 from pathlib import Path
 
+from term import TERMINAL, Hyperlink
+
 APP_DIR = Path(os.path.expanduser("~/.config/claude-toolkit"))
 PIDFILE = APP_DIR / "monitor.pid"
 REPO_DIR = Path(__file__).resolve().parent
@@ -74,15 +101,46 @@ LAUNCHER = REPO_DIR / "claude.py"
 # mounts projects/<name>/ at the container's ~/.config/claude-toolkit/project, so the
 # container queue paths are project-scoped.
 PROJECTS_DIR = APP_DIR / "projects"
+CONTAINER_WORKDIR = "/home/ubuntu/project"  # claude.py mounts every checkout here
 POLL = 2               # seconds between polls
 CI_POLL_INTERVAL = 150     # seconds between polls of a single monitoring request
 WATCH_EXPIRY = 6 * 3600    # give up on a watch with no terminal result after this
 PR_SCAN_INTERVAL = 300     # seconds between full open-PR scans
 PR_DIGEST_INTERVAL = 3600  # seconds between summary ("regular") notifications
 PR_STATE_FILE = APP_DIR / "pr-state.json"  # per-PR state, so restarts don't re-notify
+PR_START_FILE = APP_DIR / "pr-start.json"  # PR claimed per project, so a restart does not re-link
+PR_START_INTERVAL = 10     # seconds between scans of the projects' PR claims
+PR_TITLE_CHARS = 80        # a PR title is unbounded; the link text stays one line
+LINK_STATE_FILE = APP_DIR / "link-state.json"  # per-transcript read offset + links posted
+LINK_SCAN_INTERVAL = 15    # seconds between transcript tails: a link lands while you still care
+LINK_ACTIVE_WINDOW = 3600  # only tail transcripts written this recently
+LINK_STATE_TTL = 6 * 3600  # forget a transcript's offset once it is this stale
+LINK_SEEN_MEMORY = 200     # links remembered per transcript, so a re-mention is not re-posted
+LINK_MAX_PER_SCAN = 5      # links printed per transcript per scan; the rest are counted, not shown
+LINK_HEAD_LINES = 200      # transcript head read once, for the project name and whose chat it is
 NOTIFY_LOG = APP_DIR / "notifications.log"  # every notification, tailed in the monitor tab
+
+# Nothing is worth printing into a tab nobody is looking at, so every job that exists
+# to be *read* is gated on you being at the keyboard (see `Event.requires_user`).
+ACTIVE_WINDOW = 900  # seconds since the last keypress/mouse move that still counts as here
+ACTIVE_POLL = 60     # how often a deferred event looks to see whether you came back
 MONITOR_TAB_TITLE = "claude-toolkit monitor"  # iTerm session name of the monitoring tab
 MONITOR_TAB_PID = APP_DIR / "monitor-tab.pid"  # PID of the tab's tail, so we reopen only if gone
+
+# Two picks out of the backlog (job 8 below): what has waited longest, and what is
+# worth doing first. Both are judgments about your own repositories, role and
+# priorities, so a headless `claude` makes them.
+PICKS_DOC = REPO_DIR / ".claude" / "modes" / "backlog-picks.md"  # the generic task
+PICKS_STATE_FILE = APP_DIR / "backlog-picks.json"  # last run, so a restart does not re-run
+PICKS = ("oldest", "highest")  # the labels it answers with, and the order they print in
+PICKS_INTERVAL = 900          # seconds between selections
+PICKS_RETRY = 900             # ... but a selection that failed must not cost a whole cycle
+PICKS_MODEL = os.environ.get("CLAUDE_PICKS_MODEL", "claude-sonnet-5")
+PICKS_TIMEOUT = 600           # seconds to wait; the model makes several gh calls
+# A headless run cannot answer a permission prompt, so anything missing here is
+# refused and the selection comes back empty -- read-only triage, plus the user's
+# own skill scripts, which is where a backlog procedure is meant to be packaged.
+PICKS_TOOLS = ["Bash(gh:*)", "Bash(~/.claude/skills/**)", "Read", "Glob", "Grep", "Skill"]
 
 # Agent-history hints (job 3 below). Claude Code writes one JSONL transcript per
 # session under ~/.claude/projects/<mangled-cwd>/<session-id>.jsonl; the host's
@@ -134,84 +192,22 @@ def _supersede_incumbent() -> None:
         time.sleep(0.1)
 
 
-def _shquote(s: str) -> str:
-    return "'" + s.replace("'", "'\\''") + "'"
-
-
-def _osaquote(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _open_iterm_tab(title: str, launch: str) -> None:
-    """Open an iTerm2 tab titled `title` whose shell runs `launch`.
-
-    Reuses the current window (new tab) or creates one if none is open. The command
-    is passed via AppleScript `write text`, so it must be a single shell line.
-    """
-    t = _osaquote(title)
-    cmd = _osaquote(launch)
-    script = (
-        'tell application "iTerm2"\n'
-        "  if (count of windows) = 0 then\n"
-        "    create window with default profile\n"
-        "    tell current session of current window\n"
-        f"      set name to {t}\n"
-        f"      write text {cmd}\n"
-        "    end tell\n"
-        "  else\n"
-        "    tell current window\n"
-        "      create tab with default profile\n"
-        "      tell current session of current tab\n"
-        f"        set name to {t}\n"
-        f"        write text {cmd}\n"
-        "      end tell\n"
-        "    end tell\n"
-        "  end if\n"
-        "end tell\n"
-    )
-    subprocess.run(["osascript", "-e", script], check=False)
-
-
-def _monitor_tab_alive() -> bool:
-    """True if the monitoring tab's `tail` is still running.
-
-    The monitor self-supersedes on every launch, so without this check each
-    relaunch would spawn another tab. We can't rely on the iTerm session name
-    (a running job overrides it), so the tab's launch command records its own
-    PID in MONITOR_TAB_PID and we probe that: the tail is iTerm's child, not the
-    monitor's, so it (and the tab) survive a supersede and get reused. Closing
-    the tab kills the tail, so the probe fails and we reopen.
-    """
-    try:
-        pid = int(MONITOR_TAB_PID.read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return False
-    try:
-        os.kill(pid, 0)  # existence check; ProcessLookupError => gone
-    except ProcessLookupError:
-        return False
-    return True
-
-
 def _ensure_monitor_tab() -> None:
     """Open the monitoring tab (once) that tails every notification line.
 
     All notifications are printed here instead of firing macOS banners, so the
-    open set of PR changes is visible at a glance. The launch line records the
-    tail's PID (via `exec`, tail keeps the shell's `$$`) so a relaunch can tell
-    a live tab from a closed one. `tail -F` follows the log across
-    truncation/rotation; `-n +1` replays from the top so a fresh tab shows the
-    existing history, not just new lines.
+    open set of PR changes is visible at a glance. The monitor self-supersedes on
+    every launch, so without the liveness probe each relaunch would spawn another
+    tab. `tail -F` follows the log across truncation/rotation; `-n +1` replays from
+    the top so a fresh tab shows the existing history, not just new lines.
     """
     NOTIFY_LOG.parent.mkdir(parents=True, exist_ok=True)
     NOTIFY_LOG.touch(exist_ok=True)
-    if _monitor_tab_alive():
+    if TERMINAL.tab_alive(MONITOR_TAB_PID):
         return
-    launch = (
-        f"echo $$ > {_shquote(str(MONITOR_TAB_PID))}; "
-        f"exec tail -n +1 -F {_shquote(str(NOTIFY_LOG))}"
-    )
-    _open_iterm_tab(MONITOR_TAB_TITLE, launch)
+    TERMINAL.open_tab(MONITOR_TAB_TITLE,
+                      f"exec tail -n +1 -F {TERMINAL.shquote(NOTIFY_LOG)}",
+                      pidfile=MONITOR_TAB_PID)
 
 
 # ---- Job 3: servicing pending-monitoring -> pending-reads -------------------
@@ -220,6 +216,19 @@ def _ensure_monitor_tab() -> None:
 # that is not yet final counts as PENDING (the run is still going).
 _PENDING_VERDICTS = {"", "PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"}
 _FAILED_VERDICTS = {"FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+
+
+def _user_active() -> bool:
+    """True when this host saw keyboard or mouse input within ACTIVE_WINDOW.
+
+    macOS exposes it as `HIDIdleTime`, nanoseconds since the last HID event; asleep or
+    away, it just keeps growing. Unreadable means active: a probe that breaks must not
+    silence the monitor, which would look exactly like a quiet backlog.
+    """
+    r = subprocess.run(["ioreg", "-c", "IOHIDSystem", "-d", "4", "-r"],
+                       capture_output=True, text=True)
+    m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', r.stdout)
+    return int(m.group(1)) / 1e9 < ACTIVE_WINDOW if m else True
 
 
 def _gh_json(args):
@@ -326,6 +335,7 @@ class Event:
     """
 
     priority = 1
+    requires_user = False  # True for a job whose only product is a line you read
 
     def __init__(self, scheduler: sched.scheduler) -> None:
         self.scheduler = scheduler
@@ -333,6 +343,21 @@ class Event:
     def arm(self, delay: float) -> None:
         """Queue this event's `fire` to run `delay` seconds from now."""
         self.scheduler.enter(delay, self.priority, self.fire)
+
+    def deferred(self) -> bool:
+        """True when this job is only worth doing for a reader who is not here.
+
+        Gated events *defer*, they do not fire and drop the line: a transition noticed
+        while you were away would otherwise update the stored state, print into a tab
+        nobody is tailing, and never be mentioned again. Held work is still waiting
+        when you come back -- and nothing polls GitHub or spends a model call
+        meanwhile. Jobs that serve a working agent rather than a reader
+        (the pending-monitoring queue and its watches) are never gated.
+        """
+        if not self.requires_user or _user_active():
+            return False
+        self.arm(ACTIVE_POLL)
+        return True
 
     def fire(self) -> None:
         raise NotImplementedError
@@ -545,6 +570,39 @@ def _meta_pr_claims() -> dict:
     return claims
 
 
+def _pr_link(pr: dict) -> str:
+    """A PR as an OSC 8 hyperlink over `PR #<n>: <title>`, for the monitoring tab."""
+    title = _clip(pr.get("title") or "", PR_TITLE_CHARS)
+    return Hyperlink.format(f"PR #{pr['number']}" + (f": {title}" if title else ""),
+                            pr.get("url"))
+
+
+_ITEM_RE = re.compile(r"github\.com/([^/]+/[^/]+)/(?:pull|issues)/(\d+)")
+
+
+def _api_title(api_path: str) -> str:
+    """The one-line name GitHub gives an item: a PR/issue title, a run's, a commit subject.
+
+    Empty when the item is unreadable -- a private repo, a deleted item, no `gh`.
+    """
+    item = _gh_json(["api", api_path]) or {}
+    text = (item.get("title") or item.get("display_title") or item.get("name")
+            or ((item.get("commit") or {}).get("message") or "").split("\n")[0])
+    return _clip(text.strip(), PR_TITLE_CHARS)
+
+
+def _item_link(url: str) -> str:
+    """A GitHub item as an OSC 8 hyperlink over its title, resolved here via `gh`.
+
+    Only the URL is taken from the model; the title is read from GitHub, so the link
+    text cannot drift from the item it points at. The bare URL when the title is
+    unreadable -- a link with no text is not clickable.
+    """
+    m = _ITEM_RE.search(url)
+    title = _api_title(f"/repos/{m.group(1)}/issues/{m.group(2)}") if m else ""
+    return Hyperlink.format(title, url) if title else url
+
+
 def _pr_change_text(pr: dict, notes: list) -> str:
     """Render a PR change as a pending-reads item for a agent to act on."""
     return (
@@ -584,6 +642,7 @@ def _write_pr_meta(project: str, pr: dict) -> None:
         "repo": pr["repository"]["nameWithOwner"],
         "number": pr["number"],
         "url": pr.get("url"),
+        "title": pr.get("title"),
     }
     _save_json(d / "meta.json", meta)
 
@@ -595,14 +654,14 @@ def _open_pr_console(pr: dict, project: str) -> None:
     knowledge is needed."""
     repo = pr["repository"]["nameWithOwner"]
     checkout = PROJECTS_DIR / project / "repo"
-    q = lambda s: _shquote(str(s))
+    q = TERMINAL.shquote
     prep = (
         f"mkdir -p {q(checkout)} && cd {q(checkout)} && "
         f"{{ [ -e .git ] || gh repo clone {q(repo)} . ; }} && "
         f"gh pr checkout {pr['number']}"
     )
     launch = f"{prep} && python3 {q(LAUNCHER)}"
-    _open_iterm_tab(f"PR #{pr['number']}", launch)
+    TERMINAL.open_tab(f"PR #{pr['number']}", launch)
 
 
 class PullRequestsEvent(Event):
@@ -612,8 +671,8 @@ class PullRequestsEvent(Event):
     it compares CI state, latest foreign comment/review timestamp, and the review-
     requested flag against `self.state` (persisted to PR_STATE_FILE, so the monitor's
     frequent self-supersede restarts do not re-notify). A PR seen for the first time
-    is baselined silently. On a transition it prints a line to the monitoring tab
-    (marked ⚠ when the PR needs your action) and routes the change to a agent -- an
+    is baselined silently. On a transition it prints a line to the monitoring tab --
+    the PR itself, as a link to Cmd-click, marked ⚠ when it needs your action -- and routes the change to a agent -- an
     existing project's pending-reads, or a fresh per-PR console. A periodic digest
     lists the standing "action required" set (review requests, red CI), so an item
     you have not acted on keeps showing even without a fresh change. Re-arms every
@@ -621,6 +680,7 @@ class PullRequestsEvent(Event):
     """
 
     priority = 4
+    requires_user = True
 
     def __init__(self, scheduler: sched.scheduler) -> None:
         super().__init__(scheduler)
@@ -632,6 +692,8 @@ class PullRequestsEvent(Event):
         self.last_digest = 0.0
 
     def fire(self) -> None:
+        if self.deferred():
+            return
         try:
             self._scan()
         except Exception as exc:  # keep the loop alive across transient failures
@@ -666,7 +728,8 @@ class PullRequestsEvent(Event):
             self.last_digest = now
             lines = [f"{len(prs)} open, {len(action)} action required"]
             for pr, reason in sorted(action, key=lambda pa: _pr_key(pa[0])):
-                lines.append(f"  ⚠ {_pr_key(pr)} — {reason} — {pr.get('url')}")
+                link = Hyperlink.format(_pr_key(pr), pr.get("url"))
+                lines.append(f"  ⚠ {link} — {reason}")
             _notify("Open pull requests", "\n".join(lines))
 
     def _pr_action(self, cur: dict, is_review_req: bool) -> str | None:
@@ -716,10 +779,9 @@ class PullRequestsEvent(Event):
         return notes
 
     def _dispatch(self, key: str, pr: dict, notes: list, claims: dict) -> None:
-        """Notify, and hand the change to a agent (existing or fresh)."""
+        """Notify -- the PR itself, clickable -- and hand the change to a agent."""
         mark = "⚠ " if (self.state.get(key) or {}).get("action") else ""
-        title = (pr.get("title") or "")[:50]
-        _notify(f"{mark}PR #{pr['number']}: {title}", "; ".join(notes))
+        _notify(f"{mark}{_pr_link(pr)}", "; ".join(notes))
         text = _pr_change_text(pr, notes)
 
         # An agent already tracks this PR -> its pending-reads inbox. Match either an
@@ -841,16 +903,41 @@ def _history_project(session_start: str, cwd: str, path: Path) -> str:
 
     Falls back to the basename of the session's cwd, which is right for a host
     session (and merely generic -- "project" -- for a container one, where the hook
-    output is the real source). Last resort is the transcript's dir name, which is
-    the cwd path-mangled and so cannot be split back into components. Sanitized,
-    since the result becomes a path component under projects/.
+    output is the real source). A cwd of $HOME is the exception: its basename is the
+    account name, which reads as a project and is not one, so it is named "home".
+    Last resort is the transcript's dir name, which is the cwd path-mangled and so
+    cannot be split back into components. Sanitized, since the result becomes a path
+    component under projects/.
     """
     m = re.search(r"^Project name: (.+)$", session_start, re.M)
     if m and m.group(1).strip():
         name = m.group(1).strip()
+    elif cwd and Path(cwd) == Path.home():
+        name = "home"  # a session run outside any checkout: the username is not a project
     else:
         name = os.path.basename((cwd or "").rstrip("/")) or path.parent.name
     return re.sub(r"[^a-zA-Z0-9_.-]", "-", name) or "unknown"
+
+
+def _tilde(path: str) -> str:
+    """A path with $HOME written as `~`, so the label stays one short field."""
+    home = str(Path.home())
+    path = path.rstrip("/")
+    return "~" + path[len(home):] if path == home or path.startswith(home + "/") else path
+
+
+def _history_dir(session_start: str, cwd: str, path: Path) -> str:
+    """The local directory the session is working in -- where its links come from.
+
+    The transcript's own cwd, except for a container session: there it is the fixed
+    CONTAINER_WORKDIR and names nothing, so the host checkout is read from the
+    project's meta.json, which claude.py wrote at launch.
+    """
+    if cwd and cwd.rstrip("/") != CONTAINER_WORKDIR:
+        return _tilde(cwd)
+    project = _history_project(session_start, cwd, path)
+    host_dir = (_load_json(PROJECTS_DIR / project / "meta.json", {}) or {}).get("host_dir")
+    return _tilde(host_dir) if host_dir else project
 
 
 def _distill_history(entries: list):
@@ -1013,18 +1100,22 @@ def _setup_inventory(project: str) -> str:
     ])
 
 
-def _run_hinter(prompt: str):
-    """Run the headless hinter model; None on any failure, which the caller skips.
+def _run_claude(prompt: str, model: str, timeout: int, tools: list = ()):
+    """Run a headless `claude`; None on any failure, which the caller skips.
 
     Authenticates like any host CLI invocation, from the login Keychain. Run from the
-    checkout so the model sees a fixed environment regardless of where the monitor
-    was launched. Blocking -- see the class docstring on scheduler occupancy.
+    checkout so the model sees a fixed environment regardless of where the monitor was
+    launched -- and so it loads the same always-loaded prompt a session here would.
+    Without `tools` the run is text-only: a headless run cannot answer a permission
+    prompt, so anything not allow-listed here is refused rather than asked about.
+    Blocking -- see the calling class's docstring on scheduler occupancy.
     """
+    tool_args = ["--allowedTools", *tools] if tools else []
     try:
         r = subprocess.run(
-            ["claude", "-p", "--model", HINT_MODEL],
+            ["claude", "-p", "--model", model, *tool_args],
             input=prompt, capture_output=True, text=True,
-            timeout=HINT_TIMEOUT, cwd=str(REPO_DIR),
+            timeout=timeout, cwd=str(REPO_DIR),
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
@@ -1092,6 +1183,7 @@ class HistoryHintsEvent(Event):
     """
 
     priority = 5
+    requires_user = True
 
     def __init__(self, scheduler: sched.scheduler) -> None:
         super().__init__(scheduler)
@@ -1100,6 +1192,8 @@ class HistoryHintsEvent(Event):
             self.state = {}
 
     def fire(self) -> None:
+        if self.deferred():
+            return
         try:
             self._scan()
         except Exception as exc:  # keep the loop alive across transient failures
@@ -1206,13 +1300,14 @@ class HistoryHintsEvent(Event):
                 "Do not repeat or rephrase any of these; find something else or say NONE.\n"
                 + "\n".join(f"- {h}" for h in recent) + "\n\n"
             )
-        out = _run_hinter(
+        out = _run_claude(
             f"{instructions}\n\n"
             f"===== session =====\nproject: {project}\ntranscript: {path.name}\n\n"
             f"===== existing setup =====\n{_setup_inventory(project)}\n\n"
             f"{already}"
             f"===== statistics =====\n{stats}\n\n"
-            f"===== recent steps =====\n{trace}\n"
+            f"===== recent steps =====\n{trace}\n",
+            HINT_MODEL, HINT_TIMEOUT,
         )
         if out is None:
             print(f"monitor: hinter unavailable for {path.name}", file=sys.stderr)
@@ -1226,6 +1321,338 @@ class HistoryHintsEvent(Event):
         return hints
 
 
+# ---- Job 6: a clickable link to the PR a session just started on ------------
+
+
+class PrStartEvent(Event):
+    """Print a clickable link to the PR a session has just started working on.
+
+    The container's session_start hook resolves the checked-out branch's PR and
+    records it in that project's meta.json, so a claim new for a project *is* a
+    session starting on that PR -- nothing extra to trigger, and a PR reached by
+    any route (manual checkout, `gh pr checkout`, a per-PR console) announces
+    itself. The line is an OSC 8 hyperlink over `PR #<n>: <title>`, built with
+    `Hyperlink.format` rather than `render` because this monitor's own stdout is
+    detached and says nothing about the iTerm2 tab that tails the log and renders
+    the line. Claims are persisted so the frequent self-supersede restarts stay
+    quiet, and a first run with no state at all baselines every existing claim
+    silently. Re-arms every PR_START_INTERVAL.
+    """
+
+    priority = 6
+    requires_user = True
+
+    def __init__(self, scheduler: sched.scheduler) -> None:
+        super().__init__(scheduler)
+        self.seen = _load_json(PR_START_FILE, None)
+        self.baseline = not isinstance(self.seen, dict)
+        if self.baseline:
+            self.seen = {}
+
+    def fire(self) -> None:
+        if self.deferred():
+            return
+        changed = False
+        for meta in sorted(PROJECTS_DIR.glob("*/meta.json")):
+            pr = (_load_json(meta, {}) or {}).get("pr")
+            if not isinstance(pr, dict) or not pr.get("url") or not pr.get("number"):
+                continue
+            project = meta.parent.name
+            if self.seen.get(project) == pr.get("key"):
+                continue
+            self.seen[project] = pr.get("key")
+            changed = True
+            if self.baseline:
+                continue
+            _notify(f"pr start {project}", _pr_link(pr))
+        # A baseline pass persists even an empty map, so the next start is not one too.
+        if changed or self.baseline:
+            _save_json(PR_START_FILE, self.seen)
+        self.baseline = False
+        self.arm(PR_START_INTERVAL)
+
+
+# ---- Job 7: GitHub links mentioned in a chat --------------------------------
+
+_URL_RE = re.compile(r"https?://(?:www\.)?github\.com/[^\s<>\"'`)\]]+")
+_LINK_KINDS = (  # path pattern -> (what it refers to, API path naming it), tried in order
+    (re.compile(r"([^/]+/[^/]+)/pull/(\d+)"), "PR {0}#{1}", "/repos/{0}/issues/{1}"),
+    (re.compile(r"([^/]+/[^/]+)/issues/(\d+)"), "issue {0}#{1}", "/repos/{0}/issues/{1}"),
+    (re.compile(r"([^/]+/[^/]+)/actions/runs/(\d+)"), "run {1} in {0}",
+     "/repos/{0}/actions/runs/{1}"),
+    (re.compile(r"([^/]+/[^/]+)/commit/([0-9a-f]{7,40})"), "commit {0}@{1}",
+     "/repos/{0}/commits/{1}"),
+    (re.compile(r"([^/]+/[^/]+)/releases/tag/([^/]+)"), "release {0}@{1}",
+     "/repos/{0}/releases/tags/{1}"),
+)
+
+
+def _github_ref(url: str):
+    """(what a GitHub URL refers to, the API path naming it), the path itself if neither."""
+    path = url.split("github.com/", 1)[-1]
+    for pattern, label, api in _LINK_KINDS:
+        m = pattern.match(path)
+        if m:
+            return label.format(*m.groups()), api.format(*m.groups())
+    return path.rstrip("/") or url, None
+
+
+def _github_key(url: str) -> str:
+    """Identity of a GitHub URL, so /pull/7, /pull/7/files and a comment on it are one PR."""
+    return _github_ref(url)[0]
+
+
+def _github_text(url: str) -> str:
+    """Link text for a GitHub URL: the item's title, which is what the reader recognises.
+
+    A URL says only where a thing lives. Falls back to naming the kind and number
+    when GitHub cannot be asked for the title.
+    """
+    ref, api = _github_ref(url)
+    return (_api_title(api) if api else "") or ref
+
+
+def _chat_urls(chunk: str) -> list:
+    """Every GitHub URL said in the chat text of these transcript lines, in order.
+
+    Conversation only -- a typed prompt or a message's text block. A tool call and
+    its result are excluded on purpose: one `gh api` result would fill the stream
+    with links nobody mentioned.
+    """
+    urls = []
+    for line in chunk.splitlines():
+        try:
+            e = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if e.get("type") not in ("user", "assistant"):
+            continue
+        content = (e.get("message") or {}).get("content")
+        if isinstance(content, str):
+            texts = [content]
+        elif isinstance(content, list):
+            texts = [b.get("text") or "" for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        else:
+            continue
+        for text in texts:
+            urls += [u.rstrip(".,;:!?*_") for u in _URL_RE.findall(text)]
+    return urls
+
+
+def _transcript_head(path: Path):
+    """(is_a_chat, dir) read once from a transcript's first LINK_HEAD_LINES entries.
+
+    Both answers live in the opening entries: the session-start hook's output and the
+    first cwd locate the checkout, and a human-origin prompt is what separates a chat
+    from one of our own headless agents (marked `sdk`), whose text is not addressed
+    to the reader.
+    """
+    chat = False
+    start = cwd = ""
+    with path.open(errors="replace") as f:
+        for n, line in enumerate(f):
+            if n >= LINK_HEAD_LINES:
+                break
+            try:
+                e = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if e.get("type") == "user" and (e.get("origin") or {}).get("kind") == "human":
+                chat = True
+            if not cwd and e.get("cwd"):
+                cwd = e["cwd"]
+            if not start and e.get("type") == "attachment":
+                att = e.get("attachment") or {}
+                if att.get("hookEvent") == "SessionStart":
+                    start = att.get("content") or ""
+    return chat, _history_dir(start, cwd, path)
+
+
+class GithubLinksEvent(Event):
+    """Print every GitHub link a chat mentions, so it is one Cmd-click away.
+
+    A pull request, Actions run, issue or commit named mid-answer is something the
+    reader wants to open, and the monitoring tab is where they are already looking;
+    an OSC 8 hyperlink there beats hunting the URL out of agent prose. Each
+    transcript is tailed from the offset last read, stopping at the last complete
+    line so a half-written entry is picked up whole on the next scan, and only chat
+    text is searched (`_chat_urls`). A link is keyed by what it refers to, and the
+    keys posted are remembered per transcript, so the same PR named ten times prints
+    once. Beyond LINK_MAX_PER_SCAN per scan only the count prints -- a digest of
+    thirty PRs is not thirty lines. Offsets persist, so the frequent self-supersede
+    restarts neither re-post nor re-read; a first run with no state at all starts
+    every transcript at its current size, keeping the backlog out of the stream.
+    Re-arms every LINK_SCAN_INTERVAL.
+    """
+
+    priority = 7
+    requires_user = True
+
+    def __init__(self, scheduler: sched.scheduler) -> None:
+        super().__init__(scheduler)
+        self.state = _load_json(LINK_STATE_FILE, None)
+        self.baseline = not isinstance(self.state, dict)
+        if self.baseline:
+            self.state = {}
+
+    def fire(self) -> None:
+        if self.deferred():
+            return
+        try:
+            self._scan()
+        except Exception as exc:  # keep the loop alive across transient failures
+            print(f"monitor: github link scan failed: {exc}", file=sys.stderr)
+        self.baseline = False
+        self.arm(LINK_SCAN_INTERVAL)
+
+    def _scan(self) -> None:
+        now = time.time()
+        self.state = {k: v for k, v in self.state.items()
+                      if now - (v.get("seen_at") or 0) < LINK_STATE_TTL}
+        changed = self.baseline
+        for path in sorted(CLAUDE_PROJECTS_DIR.glob("*/*.jsonl")):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if now - st.st_mtime > LINK_ACTIVE_WINDOW:
+                continue  # nothing said here for an hour
+            mark = self.state.get(str(path))
+            if mark is None or "dir" not in mark:  # new, or written before dir replaced project
+                try:
+                    chat, where = _transcript_head(path)
+                except OSError:
+                    continue
+                mark = {"offset": mark["offset"] if mark else (st.st_size if self.baseline else 0),
+                        "chat": chat, "dir": where, "seen": (mark or {}).get("seen") or []}
+                self.state[str(path)] = mark
+                changed = True
+            mark["seen_at"] = now
+            if not mark.get("chat") or st.st_size <= mark["offset"]:
+                continue
+            changed |= self._tail(path, mark)
+        if changed:
+            _save_json(LINK_STATE_FILE, self.state)
+
+    def _tail(self, path: Path, mark: dict) -> bool:
+        """Read what was appended to one transcript and print the links it mentions."""
+        try:
+            with path.open("rb") as f:
+                f.seek(mark["offset"])
+                raw = f.read()
+        except OSError:
+            return False
+        end = raw.rfind(b"\n") + 1
+        if not end:
+            return False  # only a half-written entry so far: leave it for the next scan
+        mark["offset"] += end
+        posted = set(mark.get("seen") or [])
+        fresh = []
+        for url in _chat_urls(raw[:end].decode(errors="replace")):
+            key = _github_key(url)
+            if key in posted:
+                continue
+            posted.add(key)
+            fresh.append((key, url))
+        for _, url in fresh[:LINK_MAX_PER_SCAN]:
+            _notify(mark["dir"], Hyperlink.format(_github_text(url), url))
+        if len(fresh) > LINK_MAX_PER_SCAN:
+            _notify(mark["dir"],
+                    f"{len(fresh) - LINK_MAX_PER_SCAN} more GitHub links mentioned, not shown")
+        mark["seen"] = (list(mark.get("seen") or []) + [k for k, _ in fresh])[-LINK_SEEN_MEMORY:]
+        return True
+
+
+# ---- Job 8: what has waited longest, and what to do first -------------------
+
+
+def _picks(out: str) -> dict:
+    """The selector's `<label>: <url>` lines, as url -> the labels that chose it.
+
+    Keyed by URL rather than by label so one item picked twice prints one line saying
+    it is both, instead of the same title twice. A label whose line names no item is
+    simply absent -- the selector is told to omit what it cannot fill.
+    """
+    found = {}
+    for line in out.splitlines():
+        label, _, rest = line.partition(":")
+        if label.strip().lower() not in PICKS:
+            continue
+        url = next(iter(_URL_RE.findall(rest)), "")
+        if _ITEM_RE.search(url):
+            found.setdefault(url, []).append(label.strip().lower())
+    return found
+
+
+class BacklogPicksEvent(Event):
+    """Post what has waited on you longest, and what is worth doing first.
+
+    A backlog is read newest-first, so its oldest item is the one nobody looks at --
+    but oldest is not most important, and printing only one of the two is misleading
+    either way. Both are judgments about your repositories, your role and what
+    "actionable" means for you: not something to hard-code here, and not something the
+    mechanical action-required set in PullRequestsEvent can express. So the selection
+    is delegated to a headless `claude`. Run from the checkout, it loads the same
+    always-loaded prompt an interactive session here would, which is where those
+    account- and repository-specific rules already live; PICKS_DOC supplies only the
+    generic task, and the answer is one labelled URL per line.
+
+    Titles are resolved from GitHub rather than taken from the answer, so the link text
+    cannot drift from the item it points at.
+
+    The selection blocks the (single-threaded) scheduler for up to PICKS_TIMEOUT. The
+    last run is persisted, so the monitor's frequent self-supersede restarts do not
+    re-run the model; re-arms every PICKS_INTERVAL.
+    """
+
+    priority = 8
+    requires_user = True
+
+    def __init__(self, scheduler: sched.scheduler) -> None:
+        super().__init__(scheduler)
+        self.last_run = (_load_json(PICKS_STATE_FILE, {}) or {}).get("last_run") or 0
+
+    def fire(self) -> None:
+        if self.deferred():
+            return
+        due = self.last_run + PICKS_INTERVAL - time.time()
+        if due > 0:  # a restart mid-cycle waits out the remainder rather than re-running
+            self.arm(due)
+            return
+        try:
+            self._select()
+        except Exception as exc:  # keep the loop alive across transient failures
+            self._mark(0)
+            print(f"monitor: backlog picks failed: {exc}", file=sys.stderr)
+        self.arm(PICKS_INTERVAL if self.last_run else PICKS_RETRY)
+
+    def _mark(self, when: float) -> None:
+        """Record when the cycle was spent; 0 re-opens it for a retry."""
+        self.last_run = when
+        _save_json(PICKS_STATE_FILE, {"last_run": when})
+
+    def _select(self) -> None:
+        """Ask for the two picks and post them.
+
+        An answer naming no item means nothing is waiting -- a real answer, and the
+        cycle is spent on it. A run that fails outright is not: it re-opens the cycle
+        for PICKS_RETRY, and says so in the tab, because a silent failure here is
+        indistinguishable from an empty backlog and this log is the only place the
+        monitor can be heard -- claude.py gives it no stderr.
+        """
+        # Marked before the slow call, so a crash mid-run cannot re-run it every restart.
+        self._mark(time.time())
+        out = _run_claude(PICKS_DOC.read_text(), PICKS_MODEL, PICKS_TIMEOUT, PICKS_TOOLS)
+        if out is None:
+            self._mark(0)
+            _notify(PICKS[0], f"selector did not answer; retrying in {PICKS_RETRY // 60} min")
+            return
+        picks = _picks(out)
+        for url in sorted(picks, key=lambda u: PICKS.index(picks[u][0])):
+            _notify(" + ".join(picks[url]), _item_link(url))
+
+
 def main() -> int:
     _supersede_incumbent()
     PIDFILE.write_text(str(os.getpid()))
@@ -1235,6 +1662,9 @@ def main() -> int:
         ScanMonitoringEvent(scheduler).arm(0)  # pending-monitoring -> pending-reads
         PullRequestsEvent(scheduler).arm(0)    # open PRs -> notify + per-PR console
         HistoryHintsEvent(scheduler).arm(0)    # agent history -> optimization hints
+        PrStartEvent(scheduler).arm(0)         # a session starting on a PR -> clickable link
+        GithubLinksEvent(scheduler).arm(0)     # links mentioned in a chat -> clickable links
+        BacklogPicksEvent(scheduler).arm(0)    # longest-waiting + do-this-first -> clickable links
         # Recurring events re-arm themselves, so the queue never empties and run()
         # blocks forever -- until the process is killed.
         scheduler.run()

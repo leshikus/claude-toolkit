@@ -4,3 +4,19 @@ __pycache__/
 # Generated PR reports
 /daily.txt
 /report.txt
+
+# Local session state Claude Code writes into the checkout. Never committed: it is
+# per-machine, it grows without bound, and the transcripts carry work from every
+# repository the agent touched.
+/.claude/CLAUDE.md
+/.claude/backups/
+/.claude/cache/
+/.claude/file-history/
+/.claude/history.jsonl
+/.claude/paste-cache/
+/.claude/plugins/
+/.claude/projects/
+/.claude/shell-snapshots/
+/.claude/.last-*
+/.claude/start-session.md
+/tmp/

@@ -83,3 +83,27 @@ API: `pathlib.Path.unlink`/`os.remove` not `rm`, `shutil.rmtree` not `rm -rf`,
 `pathlib.Path.glob` not `ls`/`find`. Reserve shelling out for genuinely external
 programs (`git`, `docker`, `gh`). Safer (no shell quoting/injection), clearer,
 easier to test.
+
+## Comments
+
+One line, maximum — and only when the line states something the code cannot: an
+invariant, an external constraint, or why a non-obvious alternative was rejected.
+Default to no comment.
+
+Before writing a comment, apply the deletion test: if the line paraphrases what the
+code plainly does, or narrates the surrounding structure, or repeats the PR/commit
+description, delete it — it is noise, not documentation. "Name the idea" is not a
+licence to summarize the code in prose. If the only line you can write restates the
+code, there was no comment to write.
+
+Never write a multi-line orientation block that tells the reader how the section is
+organized. This exact comment was rejected in review — three lines, every one
+redundant with the code beside it and with the PR body:
+
+    # Linear body: no `if ok` / recovery-flag / dry-run gating in the orchestrator.
+    # The `ok` short-circuit lives inside step() so a failed step skips the rest;
+    # the remaining runtime checks are delegated into the (self-gating) steps.
+
+The `step()` function that followed it — a five-line helper — needed no comment at
+all. When in doubt, ship zero comments and let the code and the PR description carry
+the explanation.
