@@ -25,8 +25,8 @@ you want oversight, open `--review`: it walks every logged write one at a time
 (diff, PR, CI), reports, and lets you act. After a push lands, a host monitor
 follows its CI to conclusion and drops the result back for the session to react to,
 and it watches your open PRs for changes — no `/loop` babysitting. When a session
-starts on a PR, the tab gets a Cmd-clickable link to it, and so does every PR the
-monitor reports activity on. Anything a chat mentions — a PR, an Actions run, an
+starts on a PR, the notification stream gets a Cmd-clickable link to it, and so does
+every PR the monitor reports activity on. Anything a chat mentions — a PR, an Actions run, an
 issue, a commit, a release — is posted there too, read from the session transcript
 as it is said; only what the conversation says counts, never a tool call's output, so
 the stream stays what you would have wanted to click. Each line is labelled with the
@@ -40,17 +40,17 @@ GitHub — a URL says only where a thing lives:
 ```
 
 `term.py` renders these as OSC 8 terminal hyperlinks, falling back to the plain URL
-wherever an escape would not be rendered, and owns every call to the terminal application itself — the tabs and
-windows the monitor opens — behind one `Term` instance detected per host (iTerm2
-today).
+wherever an escape would not be rendered, and owns every call to the terminal
+application itself — the per-PR consoles the monitor opens — behind one `Term`
+instance detected per host (iTerm2 today).
 
 The monitor also watches how you and the agent are working together, and tells **you**
 which Claude Code capability would make it go better. While a session is actively
 coding — judged by its history still growing — the monitor distills the transcript
 (tool-call counts, calls that repeated verbatim, what failed, turn durations, context
 re-read) and asks a separate model what to change about the setup. Each cycle looks at
-the single most recent session and prints at most one line into the monitoring tab, so
-the stream is a slow drip you can read at a glance:
+the single most recent session and posts at most one line, so the stream is a slow
+drip you can read at a glance:
 
 ```
 09:44:05  hint cr26.6 — Try `/investigate-ci` and `/patch-release-check` next time: this session manually rebuilt both workflows via dozens of ad-hoc `gh` calls.
@@ -86,12 +86,13 @@ supplies only the generic task. It answers with one labelled URL per line, and t
 are read back from GitHub so the link text cannot drift from what it points at. One item
 that is both prints once, as `oldest + highest`.
 
-The notification stream is a host tab, so a session inside the container cannot see
-it. A `UserPromptSubmit` hook replays its tail into the session before the model
-starts on the turn — at most once every 5 minutes, and only when a new line has
-landed since the last replay.
+The stream is a log, not a window: nothing tails it and no tab is opened for it. A
+`UserPromptSubmit` hook replays its tail into the session before the model starts on
+the turn — at most once every 5 minutes, and only when a new line has landed since
+the last replay. That is the whole delivery, so a notification is read where you are
+already working rather than in a tab you would have to remember to look at.
 
-## Nothing prints into a tab you are not reading
+## Nothing is reported to somebody who is not there
 
 Every job whose only product is a line for you to read — the PR watch, the hints, the
 chat links, the backlog picks — is gated on you being at the keyboard, measured by macOS

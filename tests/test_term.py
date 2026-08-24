@@ -3,9 +3,7 @@
 
 import io
 import os
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -157,7 +155,7 @@ class TermTest(unittest.TestCase):
     def test_the_base_opens_nothing_and_says_so(self):
         with mock.patch("term.subprocess.run") as run, \
                 mock.patch("sys.stderr", new_callable=io.StringIO) as err:
-            Term().open_tab("claude-toolkit monitor", "exec tail -F /tmp/x")
+            Term().open_tab("PR #7", "gh pr checkout 7")
         run.assert_not_called()
         self.assertIn("no terminal", err.getvalue())
 
@@ -166,20 +164,6 @@ class TermTest(unittest.TestCase):
 
     def test_shquote(self):
         self.assertEqual(Term.shquote(Path("/tmp/a b")), "'/tmp/a b'")
-
-    def test_tab_alive(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pidfile = Path(tmp) / "tab.pid"
-            self.assertFalse(Term.tab_alive(pidfile))  # never opened
-            pidfile.write_text("not a pid\n")
-            self.assertFalse(Term.tab_alive(pidfile))
-            pidfile.write_text(f"{os.getpid()}\n")
-            self.assertTrue(Term.tab_alive(pidfile))
-            dead = subprocess.Popen([sys.executable, "-c", ""])
-            dead.wait()
-            pidfile.write_text(f"{dead.pid}\n")
-            self.assertFalse(Term.tab_alive(pidfile))  # tab closed
-
 
 class ItermTest(unittest.TestCase):
     def script(self, *args, **kwargs) -> str:
@@ -191,19 +175,15 @@ class ItermTest(unittest.TestCase):
         return argv[2]
 
     def test_open_tab_writes_the_command_and_names_the_tab(self):
-        script = self.script("claude-toolkit monitor", "exec tail -F /tmp/x")
+        script = self.script("PR #7", "gh pr checkout 7")
         self.assertIn('tell application "iTerm2"', script)
         self.assertIn("create tab with default profile", script)
-        self.assertIn('set name to "claude-toolkit monitor"', script)
-        self.assertIn('write text "exec tail -F /tmp/x"', script)
+        self.assertIn('set name to "PR #7"', script)
+        self.assertIn('write text "gh pr checkout 7"', script)
 
     def test_open_tab_escapes_the_applescript_string(self):
         self.assertIn(r'write text "echo \"hi\" \\ there"',
                       self.script("t", r'echo "hi" \ there'))
-
-    def test_open_tab_records_the_shell_pid_when_asked(self):
-        script = self.script("t", "exec tail -F /tmp/x", pidfile=Path("/tmp/a b.pid"))
-        self.assertIn("write text \"echo $$ > '/tmp/a b.pid'; exec tail -F /tmp/x\"", script)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,10 @@
 """UserPromptSubmit hook: show the tail of the host monitor's notification log.
 
 The monitor (`monitor.py`) appends every notification -- CI results, PR activity,
-setup hints, backlog picks -- to ~/.config/claude-toolkit/notifications.log, which
-is tailed in a separate iTerm tab. Inside the container that tab is invisible, so
-this hook replays the same lines at the start of a turn: to the reader as the
-console's `systemMessage`, and to the session as `additionalContext`.
+setup hints, backlog picks -- to ~/.config/claude-toolkit/notifications.log. This
+hook is the only thing that shows them: it replays the tail at the start of a turn,
+to the reader as the console's `systemMessage` and to the session as
+`additionalContext`.
 
 Throttled to one print per NOTIFY_INTERVAL, and silent when the log has not grown
 since the last print, so a fast exchange is not padded with the same lines again.

@@ -17,8 +17,8 @@ per request it discovers -- events adding events at runtime:
   2. Watch every open pull request (authored by you + review-requested) for a
      change that needs your attention -- CI reaching a terminal state, a new
      comment/review from someone else, or a fresh review request. Each change is
-     printed to the monitoring tab (an iTerm tab tailing notifications.log, opened on
-     startup) as a clickable link to the PR, and is handed to an agent: if a project already tracks the
+     appended to notifications.log as a clickable link to the PR, and is handed to an
+     agent: if a project already tracks the
      PR (its dir exists under projects/, or its meta.json claims it) the change
      lands in that project's pending-reads/; otherwise a per-PR iTerm console is
      opened that clones the PR into projects/pr<N>/repo and starts a session on it.
@@ -40,16 +40,16 @@ per request it discovers -- events adding events at runtime:
      symptom; advice the agent would have to act on is useless to the reader, and a
      new CLAUDE.md rule is charged against every future session, so the hinter is
      handed an inventory of the existing setup and told that silence is usually right.
-     At most two one-line hints print inline in the monitoring tab -- that is the
+     At most two one-line hints go into the notification log -- that is the
      whole delivery. Our own headless agents (the pre-push reviewer, this hinter)
      write transcripts into the same dirs and are skipped, so it never feeds itself.
   4. Print a clickable link to a pull request the moment a session starts working
      on it. The container's session_start hook records the checked-out branch's PR
      in the project's meta.json, so a claim that is new for a project is a session
      starting on that PR; the link is an OSC 8 hyperlink (see term.py) over
-     `PR #<n>: <title>`, opened with Cmd-click in the monitoring tab.
+     `PR #<n>: <title>`.
   5. Post every GitHub link *mentioned in a chat* -- a pull request, an Actions run,
-     an issue, a commit -- into the same tab as a clickable link, so a URL the agent
+     an issue, a commit -- to the same log as a clickable link, so a URL the agent
      names mid-answer is one Cmd-click away instead of a selection out of a wall of
      prose. Transcripts are tailed from the offset last read, and only conversation
      text counts: a tool call or its output would put every `gh` result in the
@@ -65,8 +65,8 @@ per request it discovers -- events adding events at runtime:
 
 Every job whose only product is a line for you to read is gated on you being at the
 keyboard (`Event.requires_user`, macOS `HIDIdleTime`): away or asleep, those events
-defer rather than fire, so nothing polls GitHub, spends a model call, or prints into a
-tab nobody is tailing -- and the work is still waiting when you come back. The jobs
+defer rather than fire, so nothing polls GitHub, spends a model call, or scrolls past
+unread -- and the work is still waiting when you come back. The jobs
 that serve a working agent rather than a reader are never gated.
 
 One instance runs at a time: on startup a new monitor supersedes any running
@@ -118,14 +118,12 @@ LINK_STATE_TTL = 6 * 3600  # forget a transcript's offset once it is this stale
 LINK_SEEN_MEMORY = 200     # links remembered per transcript, so a re-mention is not re-posted
 LINK_MAX_PER_SCAN = 5      # links printed per transcript per scan; the rest are counted, not shown
 LINK_HEAD_LINES = 200      # transcript head read once, for the project name and whose chat it is
-NOTIFY_LOG = APP_DIR / "notifications.log"  # every notification, tailed in the monitor tab
+NOTIFY_LOG = APP_DIR / "notifications.log"  # every notification; replayed by notify_tail
 
-# Nothing is worth printing into a tab nobody is looking at, so every job that exists
+# Nothing is worth reporting to somebody who is not there, so every job that exists
 # to be *read* is gated on you being at the keyboard (see `Event.requires_user`).
 ACTIVE_WINDOW = 900  # seconds since the last keypress/mouse move that still counts as here
 ACTIVE_POLL = 60     # how often a deferred event looks to see whether you came back
-MONITOR_TAB_TITLE = "claude-toolkit monitor"  # iTerm session name of the monitoring tab
-MONITOR_TAB_PID = APP_DIR / "monitor-tab.pid"  # PID of the tab's tail, so we reopen only if gone
 
 # Two picks out of the backlog (job 8 below): what has waited longest, and what is
 # worth doing first. Both are judgments about your own repositories, role and
@@ -190,24 +188,6 @@ def _supersede_incumbent() -> None:
         except ProcessLookupError:
             return
         time.sleep(0.1)
-
-
-def _ensure_monitor_tab() -> None:
-    """Open the monitoring tab (once) that tails every notification line.
-
-    All notifications are printed here instead of firing macOS banners, so the
-    open set of PR changes is visible at a glance. The monitor self-supersedes on
-    every launch, so without the liveness probe each relaunch would spawn another
-    tab. `tail -F` follows the log across truncation/rotation; `-n +1` replays from
-    the top so a fresh tab shows the existing history, not just new lines.
-    """
-    NOTIFY_LOG.parent.mkdir(parents=True, exist_ok=True)
-    NOTIFY_LOG.touch(exist_ok=True)
-    if TERMINAL.tab_alive(MONITOR_TAB_PID):
-        return
-    TERMINAL.open_tab(MONITOR_TAB_TITLE,
-                      f"exec tail -n +1 -F {TERMINAL.shquote(NOTIFY_LOG)}",
-                      pidfile=MONITOR_TAB_PID)
 
 
 # ---- Job 3: servicing pending-monitoring -> pending-reads -------------------
@@ -462,12 +442,11 @@ class CiWatchEvent(Event):
 
 
 def _notify(title: str, message: str) -> None:
-    """Append a notification line to the log tailed in the monitor tab.
+    """Append a notification line to the log the notify_tail hook replays into a session.
 
     Replaces the old macOS `display notification`: a banner sent via osascript
     opens Script Editor when clicked and scrolls away, so it never told you
-    *which* PR changed. A tailed line stays visible and readable. Best-effort;
-    never raises.
+    *which* PR changed. Best-effort; never raises.
     """
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {title} — {message}\n"
     try:
@@ -571,7 +550,7 @@ def _meta_pr_claims() -> dict:
 
 
 def _pr_link(pr: dict) -> str:
-    """A PR as an OSC 8 hyperlink over `PR #<n>: <title>`, for the monitoring tab."""
+    """A PR as an OSC 8 hyperlink over `PR #<n>: <title>`, for the notification log."""
     title = _clip(pr.get("title") or "", PR_TITLE_CHARS)
     return Hyperlink.format(f"PR #{pr['number']}" + (f": {title}" if title else ""),
                             pr.get("url"))
@@ -671,7 +650,7 @@ class PullRequestsEvent(Event):
     it compares CI state, latest foreign comment/review timestamp, and the review-
     requested flag against `self.state` (persisted to PR_STATE_FILE, so the monitor's
     frequent self-supersede restarts do not re-notify). A PR seen for the first time
-    is baselined silently. On a transition it prints a line to the monitoring tab --
+    is baselined silently. On a transition it prints a notification line --
     the PR itself, as a link to Cmd-click, marked ⚠ when it needs your action -- and routes the change to a agent -- an
     existing project's pending-reads, or a fresh per-PR console. A periodic digest
     lists the standing "action required" set (review requests, red CI), so an item
@@ -1170,7 +1149,7 @@ class HistoryHintsEvent(Event):
     is worthless here, and a new CLAUDE.md rule is charged against every future
     session, so the hinter is given an inventory of the existing setup and told that
     saying nothing is the common right answer. The hint prints inline into the
-    monitoring tab; there is no other delivery.
+    notification log; there is no other delivery.
 
     A session is looked at again once HINT_MIN_NEW_BYTES of fresh transcript exist, so
     consecutive cycles see genuinely new work; the last HINT_RECENT_MEMORY hints are
@@ -1473,7 +1452,7 @@ class GithubLinksEvent(Event):
     """Print every GitHub link a chat mentions, so it is one Cmd-click away.
 
     A pull request, Actions run, issue or commit named mid-answer is something the
-    reader wants to open, and the monitoring tab is where they are already looking;
+    reader wants to open, and the notification log is replayed where they are working;
     an OSC 8 hyperlink there beats hunting the URL out of agent prose. Each
     transcript is tailed from the offset last read, stopping at the last complete
     line so a half-written entry is picked up whole on the next scan, and only chat
@@ -1656,7 +1635,6 @@ class BacklogPicksEvent(Event):
 def main() -> int:
     _supersede_incumbent()
     PIDFILE.write_text(str(os.getpid()))
-    _ensure_monitor_tab()  # the tab that tails every notification line
     try:
         scheduler = sched.scheduler(time.time, time.sleep)
         ScanMonitoringEvent(scheduler).arm(0)  # pending-monitoring -> pending-reads

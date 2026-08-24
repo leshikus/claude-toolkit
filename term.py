@@ -39,7 +39,6 @@ import re
 import shlex
 import subprocess
 import sys
-from pathlib import Path
 from urllib.parse import quote
 
 OSC = "\x1b]"
@@ -148,39 +147,14 @@ class Term:
     def available() -> bool:
         return True
 
-    def open_tab(self, title: str, launch: str, *, pidfile=None) -> None:
-        """Open a tab titled `title` whose shell runs `launch`; here, none.
-
-        Given `pidfile`, a variant has the tab's shell record its own PID there
-        before running `launch`, so `tab_alive` can later tell a live tab from a
-        closed one -- `launch` should then `exec` its program, which keeps that PID.
-        """
+    def open_tab(self, title: str, launch: str) -> None:
+        """Open a tab titled `title` whose shell runs `launch`; here, none."""
         print(f"term: no terminal to open {title!r} in", file=sys.stderr)
 
     @staticmethod
     def shquote(value) -> str:
         """Quote `value` for the shell line a tab is launched with."""
         return shlex.quote(str(value))
-
-    @staticmethod
-    def tab_alive(pidfile) -> bool:
-        """True if the process a tab recorded in `pidfile` is still running.
-
-        The terminal's own session name cannot answer this -- a running job
-        overrides it -- and the recorded process is the terminal's child, not ours,
-        so it outlives whoever opened the tab. Closing the tab kills it, so the
-        probe fails.
-        """
-        try:
-            pid = int(Path(pidfile).read_text().strip())
-        except (FileNotFoundError, ValueError, OSError):
-            return False
-        try:
-            os.kill(pid, 0)  # existence check; ProcessLookupError => gone
-        except ProcessLookupError:
-            return False
-        return True
-
 
 class Iterm(Term):
     """iTerm2, driven with AppleScript through `osascript`."""
@@ -194,14 +168,12 @@ class Iterm(Term):
     def _osaquote(s: str) -> str:
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
-    def open_tab(self, title: str, launch: str, *, pidfile=None) -> None:
+    def open_tab(self, title: str, launch: str) -> None:
         """Open an iTerm2 tab, reusing the current window or creating one if none is.
 
         The command reaches the shell via AppleScript `write text`, so it must be a
         single shell line.
         """
-        if pidfile is not None:
-            launch = f"echo $$ > {self.shquote(pidfile)}; {launch}"
         t, cmd = self._osaquote(title), self._osaquote(launch)
         script = (
             'tell application "iTerm2"\n'
