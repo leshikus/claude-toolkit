@@ -31,18 +31,23 @@ TAIL_BYTES = 8192  # the log is unbounded; read only its end
 
 
 URL_TAIL = re.compile(r"^(.*?) \((https?://\S+)\)$")
+STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}):\d{2}  ")
+ENTRY, CONT = "  ", "      "  # an entry, and the URL row continuing it
 
 
 def rows(line: str) -> list:
-    """A line with a trailing `(url)` split so the URL gets a row to itself.
+    """One notification as the rows it prints: the text, then its URL below.
 
-    A terminal linkifies a URL it can see whole, and this console strips an OSC 8
-    escape, so the bare text is the only link there is. Long lines are hard-wrapped
-    to the pane, and a URL broken across rows stops being one clickable token; alone
-    on its row it fits any sane width.
+    The full date and seconds go: a replayed tail is minutes old, so `HH:MM` is all
+    the stamp anyone reads. The URL keeps a row of its own because a terminal
+    linkifies only a URL it can see whole -- this console destroys an OSC 8 escape,
+    so bare text is the only link there is, and a hard wrap would split it in two.
     """
+    line = STAMP.sub(r"\1  ", line.rstrip())
     m = URL_TAIL.match(line)
-    return [m.group(1), "    " + m.group(2)] if m else [line]
+    if not m:
+        return [ENTRY + line]
+    return [ENTRY + m.group(1), CONT + m.group(2)]
 
 
 def tail() -> tuple:
@@ -80,9 +85,9 @@ def main() -> int:
 
     sections = []
     if picks:
-        sections.append(block("=== backlog ===", picks.splitlines()))
+        sections.append(block("backlog", picks.splitlines()))
     if grew and lines:
-        sections.append(block("=== monitor notifications (most recent last) ===", lines))
+        sections.append(block("monitor — most recent last", lines))
     if not sections:
         return 0
 
@@ -91,7 +96,7 @@ def main() -> int:
     except OSError as exc:
         print(f"(could not write {STATE_FILE}: {exc})", file=sys.stderr)
 
-    text = "\n".join(sections)
+    text = "\n\n".join(sections)
     # systemMessage is what the console shows; plain stdout would only reach the model
     # and the Ctrl-O transcript. additionalContext gives the session the same lines.
     print(json.dumps({

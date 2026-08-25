@@ -35,12 +35,17 @@ checkout it was launched from), and the link text is the item's title read from
 GitHub — a URL says only where a thing lives:
 
 ```
-09:02:18  ~/repos/master-push — Push the release changelog and version bump to master (https://github.com/ClickHouse/ClickHouse/pull/113528)
-09:02:18  ~/repos/cr26.6 — CreateRelease (https://github.com/ClickHouse/ClickHouse/actions/runs/32462474552)
+monitor — most recent last
+  09:02  ~/repos/master-push — Push the release changelog and version bump to master
+      https://github.com/ClickHouse/ClickHouse/pull/113528
+  09:02  ~/repos/cr26.6 — CreateRelease
+      https://github.com/ClickHouse/ClickHouse/actions/runs/32462474552
 ```
 
-The URL is written out rather than hidden behind an OSC 8 escape: a Claude Code
-console strips the escape, and with it the link. `term.py` owns both renderings, and
+The URL is written out rather than hidden behind an OSC 8 escape, and it keeps a row
+of its own. The console destroys the escape, so bare text is the only link there is,
+and a terminal linkifies only a URL it can see whole — a hard wrap splits it into two
+things that are neither. `term.py` owns both renderings, and
 every call to the terminal application itself — the per-PR consoles the monitor
 opens — behind one `Term` instance detected per host (iTerm2 today).
 
@@ -75,8 +80,11 @@ adding two more lines to the stream every cycle, and it is reprinted whole each 
 the hook speaks.
 
 ```
-oldest — Make a status for failing ccache (https://github.com/ClickHouse/ClickHouse/issues/46502)
-highest — Rework AutoReleases into a praktika workflow (https://github.com/ClickHouse/ClickHouse/issues/85176)
+backlog
+  oldest — Make a status for failing ccache
+      https://github.com/ClickHouse/ClickHouse/issues/46502
+  highest — Rework AutoReleases into a praktika workflow
+      https://github.com/ClickHouse/ClickHouse/issues/85176
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an

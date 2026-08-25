@@ -61,13 +61,13 @@ class NotifyTailTest(unittest.TestCase):
 
     def test_tail_is_bounded(self):
         self.log.write_text("".join(f"line {i}\n" for i in range(100)))
-        printed = self.run_hook().splitlines()[1:]
+        printed = [r.strip() for r in self.run_hook().splitlines()[1:]]
         self.assertEqual(printed, [f"line {i}" for i in range(100 - self.hook.TAIL_LINES, 100)])
 
     def test_the_picks_print_as_their_own_section(self):
         self.picks.write_text("oldest — A (u1)\nhighest — B (u2)\n")
         out = self.run_hook()
-        self.assertIn("=== backlog ===\noldest — A (u1)\nhighest — B (u2)", out)
+        self.assertIn("backlog\n  oldest — A (u1)\n  highest — B (u2)", out)
 
     def test_a_changed_pick_speaks_even_though_the_log_is_quiet(self):
         self.log.write_text("first\n")
@@ -91,15 +91,19 @@ class NotifyTailTest(unittest.TestCase):
             self.assertEqual(out.count("oldest — A (u1)"), 1)
 
     def test_a_url_gets_a_row_to_itself(self):
-        self.log.write_text("12:00:00  ~/repos/x — A title (https://github.com/o/r/pull/7)\n")
+        self.log.write_text(
+            "2026-08-25 12:00:00  ~/repos/x — A title (https://github.com/o/r/pull/7)\n")
         self.assertEqual(self.run_hook().splitlines()[1:],
-                         ["12:00:00  ~/repos/x — A title",
-                          "    https://github.com/o/r/pull/7"])
+                         ["  12:00  ~/repos/x — A title",
+                          "      https://github.com/o/r/pull/7"])
 
     def test_a_line_without_a_url_stays_one_row(self):
-        self.log.write_text("12:00:00  hint x — Install node in this environment\n")
-        self.assertEqual(self.run_hook().splitlines()[1:],
-                         ["12:00:00  hint x — Install node in this environment"])
+        self.log.write_text("2026-08-25 12:00:00  hint x — Install node\n")
+        self.assertEqual(self.run_hook().splitlines()[1:], ["  12:00  hint x — Install node"])
+
+    def test_the_date_and_seconds_are_dropped_from_the_stamp(self):
+        self.log.write_text("2026-08-25 09:07:42  hint x — y\n")
+        self.assertEqual(self.run_hook().splitlines()[1:], ["  09:07  hint x — y"])
 
     def test_stamp_records_the_size_it_printed(self):
         self.log.write_text("first\n")
