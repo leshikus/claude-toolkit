@@ -25,7 +25,7 @@ CONFIG = Path(os.path.expanduser("~/.config/claude-toolkit"))
 NOTIFY_LOG = CONFIG / "notifications.log"
 PICKS_FILE = CONFIG / "backlog-picks.txt"
 STATE_FILE = CONFIG / "project" / "notify-tail.json"
-NOTIFY_INTERVAL = 300  # seconds between prints
+NOTIFY_INTERVAL = 60  # seconds between prints
 TAIL_LINES = 12  # each line with a URL costs two rows below, so keep the tail short
 TAIL_BYTES = 8192  # the log is unbounded; read only its end
 
