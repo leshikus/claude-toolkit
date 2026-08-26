@@ -43,8 +43,8 @@ session left on the branch.
 An issue URL clones nothing. Establishing whether it still reproduces needs the issue,
 not a checkout, and an issue old enough to be the oldest thing in a backlog is often
 fixed already — a ClickHouse-sized clone is a lot to pay for that verdict. The session
-opens in an empty directory of its own on `Reproduce <issue>`, the shape the review
-prompt uses: name the task, leave what it means to the agent. The pull request comes
+opens in an empty directory of its own, on a goal met by showing whether it still
+reproduces, either way, with the evidence. The pull request comes
 after the verdict, and `./claude.py <pr-url>` then names its directory for the PR.
 
 Relaunching a project takes it over. A container is named for its project, so the
@@ -53,9 +53,16 @@ typed in — `--resume` alone would not have: it starts a second agent on the sa
 transcript and leaves both working. Per-project state assumes one session, the same way
 the monitor allows one instance. The directory is named `<repo>-<number>`, because a
 PR number is unique only inside its repo and `ClickHouse` and `clickhouse-private`
-overlap constantly. What it opens *on* depends on whose PR it is,
-decided by the token's own login: your own starts on what is left to finish it,
-anyone else's on reviewing it.
+overlap constantly. What it opens *on* is a `/goal`, not an
+instruction — a goal is re-checked before the session stops, which is what a launch
+wants from an agent that has a pull request to get somewhere. Whose PR it is decides
+the condition, from the token's own login: your own is finished when CI is green and
+every review comment is triaged; anyone else's when the review is drafted.
+
+Each condition is met by *preparing* what needs you, never by doing it. Answering a
+review comment needs your agreement first, so a goal demanding answered comments would
+drive the session straight through that gate; it is reached when the patch and the
+proposed action are waiting for your decision.
 
 Run the working session and let it work. A push goes out the moment it passes the
 pre-push review, so CI starts immediately — no approval queue in the hot path. When

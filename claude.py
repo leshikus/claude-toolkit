@@ -252,6 +252,21 @@ def gh_json(*args) -> dict:
     return json.loads(r.stdout)
 
 
+def goal(condition: str) -> str:
+    """A `/goal` command: the session keeps working until `condition` holds.
+
+    A plain prompt is one instruction, and the session stops when it judges itself
+    done. A goal is re-checked before stopping, which is what a launch wants from an
+    agent that has a pull request to get somewhere.
+
+    Which is also why every condition here is met by *preparing* what needs a decision
+    rather than by making it. Answering a review comment requires the user's agreement
+    first, so a goal demanding answered comments would push straight through that gate
+    -- the goal is reached when the patch and the proposed action are ready for them.
+    """
+    return f"/goal {condition}"
+
+
 def stage_url(url: str):
     """(checkout, opening prompt) for a pull request or issue URL.
 
@@ -280,7 +295,8 @@ def stage_issue(m, url: str):
     project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-issue-{m.group(3)}")
     work = APP_DIR / "projects" / project / "work"
     work.mkdir(parents=True, exist_ok=True)
-    return work, f"Reproduce {url}"
+    return work, goal(f"{url} is shown either to still reproduce or not to, with the "
+                      f"evidence for which")
 
 
 def clone_or_fetch(repo: str, checkout: Path) -> Path:
@@ -334,7 +350,13 @@ def stage_pr(url: str):
     repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
     author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
     mine = author == gh_json("api", "user")["login"]
-    prompt = f"What should we do to finalize {url}?" if mine else f"Review {url}"
+    prompt = goal(
+        f"{url} has green CI, and every open review comment on it is triaged with a "
+        f"patch prepared and a proposed action waiting for my decision -- apply, reply "
+        f"and push nothing for a review comment until I have agreed to it"
+        if mine else
+        f"{url} is reviewed and the draft findings are ready for my approval, with "
+        f"nothing posted to GitHub")
 
     working = project_claiming(f"{repo}#{number}")
     if working:

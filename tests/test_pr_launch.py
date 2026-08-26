@@ -58,7 +58,7 @@ class StagePrTest(unittest.TestCase):
         checkout, prompt = claude.stage_pr(URL)
         self.assertEqual(checkout, chp)
         self.assertEqual(self.ran, [])          # nothing cloned, nothing reset
-        self.assertIn("finalize", prompt)
+        self.assertIn("green CI", prompt)
 
     def test_a_claim_whose_directory_is_gone_does_not_win(self):
         self.claim("chp-1", self.app / "repos" / "chp-1", "ClickHouse/ClickHouse#7")
@@ -79,12 +79,30 @@ class StagePrTest(unittest.TestCase):
     def test_my_own_pr_opens_on_finishing_it(self):
         checkout, prompt = claude.stage_pr(URL)
         self.assertEqual(checkout, self.app / "projects" / "ClickHouse-7" / "repo")
-        self.assertIn("finalize", prompt)
+        self.assertTrue(prompt.startswith("/goal "))
+        self.assertIn("green CI", prompt)
         self.assertIn(URL, prompt)
+
+    def test_my_own_goal_stops_at_preparing_a_review_reply(self):
+        """A goal is re-checked before stopping: demanding answered comments would
+        drive the session straight through the gate that waits for the user."""
+        prompt = claude.stage_pr(URL)[1]
+        self.assertIn("waiting for my decision", prompt)
+        self.assertIn("until I have agreed to it", prompt)
+        self.assertNotIn("answered", prompt)
+
+    def test_a_review_goal_is_met_by_a_draft_not_a_posted_review(self):
+        self.author = "alexey-milovidov"
+        prompt = claude.stage_pr(URL)[1]
+        self.assertIn("ready for my approval", prompt)
+        self.assertIn("nothing posted to GitHub", prompt)
 
     def test_someone_elses_pr_opens_on_reviewing_it(self):
         self.author = "alexey-milovidov"
-        self.assertEqual(claude.stage_pr(URL)[1], f"Review {URL}")
+        prompt = claude.stage_pr(URL)[1]
+        self.assertTrue(prompt.startswith("/goal "))
+        self.assertIn("reviewed", prompt)
+        self.assertIn("nothing posted", prompt)
 
     def test_the_name_carries_the_repo_because_a_number_alone_is_not_unique(self):
         """ClickHouse#7 and clickhouse-private#7 must not share a queue or a checkout."""
@@ -207,8 +225,11 @@ class StageIssueTest(unittest.TestCase):
         claude.stage_url(self.ISSUE)
         self.assertEqual(self.ran, [])
 
-    def test_the_prompt_asks_for_the_repro_and_nothing_else(self):
-        self.assertEqual(claude.stage_url(self.ISSUE)[1], f"Reproduce {self.ISSUE}")
+    def test_the_prompt_is_a_goal_about_reproducing_it(self):
+        prompt = claude.stage_url(self.ISSUE)[1]
+        self.assertTrue(prompt.startswith("/goal "))
+        self.assertIn("reproduce", prompt)
+        self.assertIn(self.ISSUE, prompt)
 
     def test_the_issue_gets_a_project_of_its_own(self):
         """Its own queues and stamp, rather than whichever directory you typed in."""
