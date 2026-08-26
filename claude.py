@@ -289,13 +289,19 @@ def clone_or_fetch(repo: str, checkout: Path) -> Path:
     The clone borrows its objects from the shared mirror when there is one, so it costs
     a working tree instead of 7.3 GB. The monitor keeps those mirrors warm; this asks
     for one anyway, for the first launch on a repo the monitor has not seen.
+
+    The mirror is refreshed before either path, not just before a clone. An object
+    reachable through alternates counts as already had, so a borrowing checkout whose
+    mirror is current fetches almost nothing -- while one left to fetch for itself
+    transfers every new object into its own store, and the sharing stops paying after
+    the first clone.
     """
+    gitstore.refresh(repo)
     if (checkout / ".git").exists():
         print(f"reusing {checkout}")
         run_step(["git", "fetch", "--prune", "origin"], cwd=checkout, fatal=False)
         return checkout
     checkout.mkdir(parents=True, exist_ok=True)
-    gitstore.refresh(repo)
     borrow = gitstore.reference(repo)
     if borrow:
         print(f"borrowing objects from {gitstore.mirror(repo)}")

@@ -27,8 +27,10 @@ class StagePrTest(unittest.TestCase):
         self.fork, self.author = False, ME
         mock.patch.object(claude, "gh_json", side_effect=self.gh).start()
         # The store reaches GitHub; a unit test must never make it do so.
-        self.borrow = []
-        mock.patch.object(claude.gitstore, "refresh", return_value="fetched").start()
+        self.borrow, self.refreshed = [], []
+        mock.patch.object(claude.gitstore, "refresh",
+                          side_effect=lambda repo: (self.refreshed.append(repo),
+                                                    "fetched")[1]).start()
         mock.patch.object(claude.gitstore, "reference",
                           side_effect=lambda repo: self.borrow).start()
         mock.patch.object(claude.gitstore, "mirror",
@@ -110,6 +112,12 @@ class StagePrTest(unittest.TestCase):
         (self.app / "projects" / "ClickHouse-7" / "repo" / ".git").mkdir(parents=True)
         claude.stage_pr(URL)
         self.assertEqual(self.ran, [["git", "fetch", "--prune"], ["gh", "pr", "checkout"]])
+
+    def test_the_mirror_is_refreshed_before_updating_a_checkout_too(self):
+        """Objects the mirror has count as had, so the checkout's own fetch stays small."""
+        (self.app / "projects" / "ClickHouse-7" / "repo" / ".git").mkdir(parents=True)
+        claude.stage_pr(URL)
+        self.assertEqual(self.refreshed, ["ClickHouse/ClickHouse"])
         self.assertIn("--force", self.forced)
 
     def test_only_the_clone_is_fatal(self):
