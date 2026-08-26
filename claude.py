@@ -256,7 +256,9 @@ def stage_pr(url: str):
     decides what the session opens on. The token's own login is what tells them
     apart -- nothing about the URL does.
 
-    The checkout lives at projects/<repo>-<N>/repo, the same place the monitor puts a
+    A project already tracking this PR wins: that is the checkout you have been working
+    in, and cloning a second copy would split the PR across two projects. Otherwise the
+    checkout lives at projects/<repo>-<N>/repo, the same place the monitor puts a
     per-PR console, so both routes to a PR land in one directory and `claude.py`
     already reads the project name from it. A fork is synced first: its default
     branch going stale is what makes a local checkout diverge from what CI ran.
@@ -269,12 +271,20 @@ def stage_pr(url: str):
     if not m:
         sys.exit(f"error: not a GitHub pull request URL: {url}")
     repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
-    # Same name monitor.py's _pr_project builds, so a PR reached by either route is one
-    # project: a number alone is unique only within a repo.
+    author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
+    mine = author == gh_json("api", "user")["login"]
+    prompt = f"What should we do to finalize {url}?" if mine else f"Review {url}"
+
+    working = project_claiming(f"{repo}#{number}")
+    if working:
+        print(f"{repo}#{number} is already {working}")
+        return working, prompt
+
+    # Same name monitor.py's _pr_project builds, so a PR the monitor opens and one
+    # opened here are one project: a number alone is unique only within a repo.
     project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-{number}")
     if gh_json("repo", "view", repo, "--json", "isFork")["isFork"]:
         run_step(["gh", "repo", "sync", repo], fatal=False)
-    author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
     checkout = APP_DIR / "projects" / project / "repo"
     if (checkout / ".git").exists():
         # Reused rather than recloned -- these are ClickHouse-sized repositories -- but
@@ -288,8 +298,26 @@ def stage_pr(url: str):
     # whatever a previous session left on the branch. It does not touch an unclean
     # working tree, which is why the step still only warns.
     run_step(["gh", "pr", "checkout", number, "--force"], cwd=checkout, fatal=False)
-    mine = author == gh_json("api", "user")["login"]
-    return checkout, (f"What should we do to finalize {url}?" if mine else f"Review {url}")
+    return checkout, prompt
+
+
+def project_claiming(pr_key: str):
+    """The directory of the project already tracking `pr_key`, or None.
+
+    A pull request is one project however you reach it. session_start records the
+    branch's PR into meta.json, so a checkout you already work in -- ~/repos/chp-1 for
+    clickhouse-private#69819 -- is found here rather than cloned a second time under a
+    name of our own, which would split that PR's queues, stamp and session in two.
+
+    Nothing in it is touched: unlike the disposable checkout below, it is yours, so the
+    branch stays where you left it.
+    """
+    for meta in (APP_DIR / "projects").glob("*/meta.json"):
+        data = read_json(meta)
+        if (data.get("pr") or {}).get("key") == pr_key and data.get("host_dir"):
+            if Path(data["host_dir"]).is_dir():  # a claim can outlive its directory
+                return Path(data["host_dir"])
+    return None
 
 
 def run_step(argv: list, cwd=None, fatal: bool = True) -> None:

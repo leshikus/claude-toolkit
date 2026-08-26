@@ -20,10 +20,13 @@ log you walk afterward in a single review window.
 python3 -m unittest discover tests   # unit tests
 ```
 
-Given a pull request URL, the launcher does the setup you would otherwise type: syncs
-the repo if it is a fork, clones it under `projects/<repo>-<N>/repo` — the same place the
-monitor puts a per-PR console, so both routes land in one directory — checks the PR
-out, and opens the session there. A checkout that is already present is fetched
+Given a pull request URL, the launcher does the setup you would otherwise type. If a
+project is already tracking that PR — `~/repos/chp-1` for `clickhouse-private#69819`,
+recorded by the session-start hook — that checkout is used untouched: a PR is one
+project however you reach it, and a second clone would split its queues, its
+notification stamp and its session in two. Otherwise it syncs the repo if it is a fork,
+clones it under `projects/<repo>-<N>/repo` — the same place the monitor puts a per-PR
+console — checks the PR out, and opens the session there. A checkout that is already present is fetched
 rather than recloned — these are ClickHouse-sized repositories — and only the clone is
 fatal: a failed sync, fetch or checkout still leaves something to work in, so the
 session opens and is told what went wrong. The checkout is forced to match the PR:

@@ -34,6 +34,34 @@ class StagePrTest(unittest.TestCase):
             return {"author": {"login": self.author}}
         return {"login": ME}
 
+    def claim(self, project: str, host_dir: Path, key: str) -> None:
+        """What session_start records once a session sees its branch's PR."""
+        d = self.app / "projects" / project
+        d.mkdir(parents=True)
+        host_dir.mkdir(parents=True, exist_ok=True)
+        (d / "meta.json").write_text(
+            claude.json.dumps({"host_dir": str(host_dir), "pr": {"key": key}}))
+
+    def test_a_checkout_already_tracking_the_pr_is_used_as_is(self):
+        """One PR is one project: cloning a second copy splits its queues and session."""
+        chp = self.app / "repos" / "chp-1"
+        self.claim("chp-1", chp, "ClickHouse/ClickHouse#7")
+        checkout, prompt = claude.stage_pr(URL)
+        self.assertEqual(checkout, chp)
+        self.assertEqual(self.ran, [])          # nothing cloned, nothing reset
+        self.assertIn("finalize", prompt)
+
+    def test_a_claim_whose_directory_is_gone_does_not_win(self):
+        self.claim("chp-1", self.app / "repos" / "chp-1", "ClickHouse/ClickHouse#7")
+        (self.app / "repos" / "chp-1").rmdir()
+        self.assertEqual(claude.stage_pr(URL)[0],
+                         self.app / "projects" / "ClickHouse-7" / "repo")
+
+    def test_another_prs_claim_is_not_mistaken_for_this_one(self):
+        self.claim("chp-1", self.app / "repos" / "chp-1", "ClickHouse/ClickHouse#8")
+        self.assertEqual(claude.stage_pr(URL)[0],
+                         self.app / "projects" / "ClickHouse-7" / "repo")
+
     def test_a_non_pr_url_is_refused(self):
         with self.assertRaises(SystemExit) as e:
             claude.stage_pr("https://github.com/ClickHouse/ClickHouse/issues/7")
