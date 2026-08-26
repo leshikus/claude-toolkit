@@ -53,7 +53,7 @@ class PrStartEventTest(unittest.TestCase):
         self.claim("cr26.7", 8, title="Fix the other thing")
         out = self.fire()
         self.assertIn("pr start cr26.7", out)
-        self.assertIn(Hyperlink.plain("PR #8: Fix the other thing",
+        self.assertIn(Hyperlink.format("PR #8: Fix the other thing",
                                        "https://github.com/ClickHouse/ClickHouse/pull/8"), out)
 
     def test_an_unchanged_claim_is_not_repeated(self):
@@ -66,7 +66,7 @@ class PrStartEventTest(unittest.TestCase):
     def test_a_titleless_claim_links_the_number_alone(self):
         self.fire()  # baseline an empty projects dir
         self.claim("cr26.6", 7)
-        self.assertIn(Hyperlink.plain("PR #7", URL), self.fire())
+        self.assertIn(Hyperlink.format("PR #7", URL), self.fire())
 
     def test_an_incomplete_claim_is_ignored(self):
         self.fire()

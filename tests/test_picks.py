@@ -42,8 +42,8 @@ class BacklogPicksEventTest(unittest.TestCase):
 
     def test_posts_both_picks(self):
         out = self.fire(BOTH)
-        self.assertIn(f"oldest — {Hyperlink.plain(TITLE, OLD)}", out)
-        self.assertIn(f"highest — {Hyperlink.plain(TITLE, HOT)}", out)
+        self.assertIn(f"oldest — {Hyperlink.format(TITLE, OLD)}", out)
+        self.assertIn(f"highest — {Hyperlink.format(TITLE, HOT)}", out)
 
     def test_one_item_that_is_both_prints_once(self):
         out = self.fire(f"oldest: {OLD}\nhighest: {OLD}")

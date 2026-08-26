@@ -4,7 +4,8 @@
 Two channels, both written by `monitor.py` and invisible from inside the container.
 `backlog-picks.txt` is state -- the pair worth looking at right now, overwritten every
 cycle -- and is reprinted whole. `notifications.log` is history -- CI results, PR
-activity, setup hints -- and only its tail is replayed.
+activity, setup hints -- and only its tail is replayed. Both carry OSC 8 hyperlinks,
+which reach the terminal intact and render as underlined titles.
 
 The reader sees them as the console's `systemMessage`; the session is handed the same
 text as `additionalContext`.
@@ -32,31 +33,23 @@ PICKS_FILE = CONFIG / "backlog-picks.txt"
 STATE_FILE = CONFIG / "project" / "notify-tail.json"
 INTERVAL_FILE = CONFIG / "config" / "notify-interval"
 NOTIFY_INTERVAL = 300  # seconds between prints, when config/notify-interval says nothing
-TAIL_LINES = 12  # each line with a URL costs two rows below, so keep the tail short
+TAIL_LINES = 20
 TAIL_BYTES = 8192  # the log is unbounded; read only its end
 
 
-URL_TAIL = re.compile(r"^(.*?) \((https?://\S+)\)$")
 STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}):\d{2}  ")
-ENTRY, CONT = "  ", "      "  # an entry, and the URL row continuing it
+ENTRY = "  "
 
 
-def rows(line: str) -> list:
-    """One notification as the rows it prints: the text, then its URL below.
+def row(line: str) -> str:
+    """One notification as it prints: `HH:MM  <text>`, indented.
 
-    The full date and seconds go: a replayed tail is minutes old, so `HH:MM` is all
-    the stamp anyone reads. The URL gets a row of its own because a terminal linkifies
-    only a URL it can see whole, and a hard wrap would split it in two.
-
-    An underlined title is not available here. Printing the OSC 8 escape by hand
-    showed the ESC bytes stripped and the payload left as text, and a markdown link
-    prints as `[title](url)` verbatim -- so the URL is shown, because it is the link.
+    The full date and the seconds go -- a replayed tail is minutes old, so `HH:MM` is
+    all the stamp anyone reads. The OSC 8 escape the monitor wrote is passed through
+    untouched: the terminal renders it as an underlined title, so the URL never has to
+    be shown. Markdown would not do -- this console prints `[title](url)` verbatim.
     """
-    line = STAMP.sub(r"\1  ", line.rstrip())
-    m = URL_TAIL.match(line)
-    if not m:
-        return [ENTRY + line]
-    return [ENTRY + m.group(1), CONT + m.group(2)]
+    return ENTRY + STAMP.sub(r"\1  ", line.rstrip())
 
 
 def interval() -> int:
@@ -108,7 +101,7 @@ def main() -> int:
         return 0
 
     def block(header: str, body: list) -> str:
-        return "\n".join([header] + [r for line in body for r in rows(line)])
+        return "\n".join([header] + [row(line) for line in body])
 
     sections = []
     if picks:
