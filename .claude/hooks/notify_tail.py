@@ -35,18 +35,26 @@ STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}):\d{2}  ")
 ENTRY, CONT = "  ", "      "  # an entry, and the URL row continuing it
 
 
-def rows(line: str) -> list:
+def rows(line: str, md: bool = False) -> list:
     """One notification as the rows it prints: the text, then its URL below.
 
     The full date and seconds go: a replayed tail is minutes old, so `HH:MM` is all
     the stamp anyone reads. The URL keeps a row of its own because a terminal
     linkifies only a URL it can see whole -- this console destroys an OSC 8 escape,
     so bare text is the only link there is, and a hard wrap would split it in two.
+
+    `md` is a live probe, not an option: the backlog section asks for a markdown link
+    while the monitor section keeps the bare URL, so one replay shows both and says
+    which of the two this console renders. The loser goes.
     """
     line = STAMP.sub(r"\1  ", line.rstrip())
     m = URL_TAIL.match(line)
     if not m:
         return [ENTRY + line]
+    if md:
+        label, sep, title = m.group(1).partition(" — ")
+        linked = f"[{title}]({m.group(2)})" if sep else f"[{m.group(1)}]({m.group(2)})"
+        return [ENTRY + label + sep + linked if sep else ENTRY + linked]
     return [ENTRY + m.group(1), CONT + m.group(2)]
 
 
@@ -80,12 +88,12 @@ def main() -> int:
     if not grew and picks == state.get("picks", ""):
         return 0
 
-    def block(header: str, body: list) -> str:
-        return "\n".join([header] + [r for line in body for r in rows(line)])
+    def block(header: str, body: list, md: bool = False) -> str:
+        return "\n".join([header] + [r for line in body for r in rows(line, md)])
 
     sections = []
     if picks:
-        sections.append(block("backlog", picks.splitlines()))
+        sections.append(block("backlog", picks.splitlines(), md=True))
     if grew and lines:
         sections.append(block("monitor — most recent last", lines))
     if not sections:
