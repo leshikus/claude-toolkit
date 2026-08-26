@@ -159,7 +159,7 @@ class SupersedeTest(unittest.TestCase):
 
 
 class StageIssueTest(unittest.TestCase):
-    """An issue becomes a draft PR first, so the branch and the PR exist before turn one."""
+    """An issue needs no checkout: the verdict may be "already fixed"."""
 
     ISSUE = "https://github.com/ClickHouse/ClickHouse/issues/92886"
 
@@ -171,32 +171,21 @@ class StageIssueTest(unittest.TestCase):
         mock.patch.object(claude, "run_step",
                           side_effect=lambda argv, cwd=None, fatal=True:
                           self.ran.append(argv)).start()
-        mock.patch.object(claude, "gh_json",
-                          return_value={"title": "Expose proper tests logs"}).start()
-        self.created = "https://github.com/ClickHouse/ClickHouse/pull/99"
-        mock.patch.object(claude, "gh_out", side_effect=lambda *a: self.created).start()
 
     def test_an_unsupported_url_names_both_kinds(self):
         with self.assertRaises(SystemExit) as e:
             claude.stage_url("https://github.com/ClickHouse/ClickHouse/commit/abc1234")
         self.assertIn("pull request or issue URL", str(e.exception))
 
-    def test_the_prompt_reproduces_first_then_finalizes_the_draft(self):
-        _, prompt = claude.stage_url(self.ISSUE)
-        self.assertEqual(prompt, f"Reproduce {self.ISSUE}, then finalize {self.created}")
+    def test_nothing_is_cloned_and_nothing_is_pushed(self):
+        claude.stage_url(self.ISSUE)
+        self.assertEqual(self.ran, [])
 
-    def test_a_pull_request_that_could_not_be_opened_still_asks_for_a_repro(self):
-        self.created = ""
+    def test_the_prompt_asks_for_the_repro_and_nothing_else(self):
         self.assertEqual(claude.stage_url(self.ISSUE)[1], f"Reproduce {self.ISSUE}")
 
-    def test_the_branch_carries_one_empty_commit_to_open_the_pr_with(self):
-        claude.stage_url(self.ISSUE)
-        self.assertEqual([a[:3] for a in self.ran],
-                         [["gh", "repo", "clone"], ["git", "switch", "-C"],
-                          ["git", "commit", "--allow-empty"], ["git", "push", "-f"]])
-        self.assertIn(f"Fixes {self.ISSUE}", self.ran[2])
-
-    def test_the_checkout_is_named_for_the_issue(self):
-        """The PR number does not exist yet; project_claiming reunites them afterwards."""
-        checkout, _ = claude.stage_url(self.ISSUE)
-        self.assertEqual(checkout, self.app / "projects" / "ClickHouse-issue-92886" / "repo")
+    def test_the_issue_gets_a_project_of_its_own(self):
+        """Its own queues and stamp, rather than whichever directory you typed in."""
+        work, _ = claude.stage_url(self.ISSUE)
+        self.assertEqual(work, self.app / "projects" / "ClickHouse-issue-92886" / "work")
+        self.assertTrue(work.is_dir())

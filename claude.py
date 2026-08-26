@@ -242,15 +242,6 @@ PR_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)")
 ISSUE_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)")
 
 
-def gh_out(*args) -> str:
-    """stdout of a `gh` command, or "" if it failed, saying why."""
-    r = subprocess.run(["gh", *args], capture_output=True, text=True)
-    if r.returncode:
-        print(f"warning: gh {' '.join(args)} failed: {r.stderr.strip()}", file=sys.stderr)
-        return ""
-    return r.stdout.strip()
-
-
 def gh_json(*args) -> dict:
     """Parsed JSON from a `gh` command, or exit reporting its own error."""
     r = subprocess.run(["gh", *args], capture_output=True, text=True)
@@ -262,9 +253,8 @@ def gh_json(*args) -> dict:
 def stage_url(url: str):
     """(checkout, opening prompt) for a pull request or issue URL.
 
-    An issue is turned into a draft pull request and then handled as one, so the whole
-    session -- the branch, the PR to push to, the CI that follows -- exists before the
-    first turn instead of being set up during it.
+    A pull request brings its checkout; an issue brings nothing, because establishing
+    whether it still reproduces does not need one.
     """
     if PR_URL.match(url):
         return stage_pr(url)
@@ -275,34 +265,20 @@ def stage_url(url: str):
 
 
 def stage_issue(m, url: str):
-    """Open a draft PR for an issue and return its checkout and prompt.
+    """(a working directory, the opening prompt) for an issue. Nothing is cloned.
 
-    The pull request is a placeholder: an empty commit and `Fixes <url>` for a body,
-    because there is nothing to describe until the fix exists. Whether the issue still
-    reproduces is the first thing the session is asked, in the shape the review prompt
-    uses: name the task and leave what it means to the agent. An issue old enough to be
-    the oldest thing in a backlog is often already fixed, and that is a judgment about
-    the code, not one a launcher can make.
+    Deciding whether an issue still reproduces needs the issue, not a checkout, and
+    these are ClickHouse-sized clones to pay for a verdict that may be "already fixed".
+    The pull request comes after that verdict and from the session; `claude.py <pr-url>`
+    then names its directory for the PR, which is the name that outlives the issue.
 
-    The checkout is named for the issue, since the PR number does not exist until the
-    branch is pushed. Once session_start records the PR claim, `project_claiming` finds
-    this directory again for the PR URL, so the two do not become separate projects.
+    The directory is empty and its own project, so the session gets its own queues and
+    notification stamp rather than borrowing whichever one you happened to type in.
     """
-    repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
-    title = gh_json("issue", "view", number, "--repo", repo, "--json", "title")["title"]
-    project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-issue-{number}")
-    checkout = clone_or_fetch(repo, APP_DIR / "projects" / project / "repo")
-
-    branch = f"fix-{number}"
-    run_step(["git", "switch", "-C", branch], cwd=checkout)
-    run_step(["git", "commit", "--allow-empty", "-m", f"Fixes {url}"], cwd=checkout)
-    run_step(["git", "push", "-f", "-u", "origin", branch], cwd=checkout, fatal=False)
-    pr = gh_out("pr", "create", "--repo", repo, "--draft", "--head", branch,
-                "--title", title, "--body", f"Fixes {url}")
-    if not pr:
-        return checkout, f"Reproduce {url}"
-    print(f"opened {pr}")
-    return checkout, f"Reproduce {url}, then finalize {pr}"
+    project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-issue-{m.group(3)}")
+    work = APP_DIR / "projects" / project / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    return work, f"Reproduce {url}"
 
 
 def clone_or_fetch(repo: str, checkout: Path) -> Path:
@@ -447,11 +423,10 @@ def main() -> None:
     else:
         cwd = Path.cwd()
     projects_dir = APP_DIR / "projects"
-    # A monitor-bootstrapped per-PR checkout lives at projects/<name>/repo; its
-    # project state (queues, meta.json) is the parent dir, so the project name is
-    # that parent -- not the generic "repo". Any other cwd names its project by its
-    # own basename, as before.
-    if cwd.name == "repo" and cwd.parent.parent == projects_dir:
+    # A directory we made -- projects/<name>/repo for a PR, projects/<name>/work for an
+    # issue -- holds its project state one level up, so the project is that parent
+    # rather than the generic leaf. Any other cwd names its project by its own basename.
+    if cwd.parent.parent == projects_dir:
         project = cwd.parent.name
     else:
         project = cwd.name

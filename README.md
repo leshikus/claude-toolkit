@@ -33,13 +33,12 @@ session opens and is told what went wrong. The checkout is forced to match the P
 it belongs to the toolkit, so tracking the remote beats preserving whatever the last
 session left on the branch.
 
-An issue URL is turned into a pull request first: a branch, one empty commit, and a
-draft PR whose body is `Fixes <url>`. There is nothing to describe until the fix
-exists, and this way the branch, the PR to push to and the CI that follows all exist
-before the first turn rather than being set up during it. The session opens on
-`Reproduce <issue>, then finalize <pr>` — the shape the review prompt uses, naming the
-task and leaving what it means to the agent. An issue old enough to be the oldest thing
-in a backlog is often fixed already, and that is a judgment about the code.
+An issue URL clones nothing. Establishing whether it still reproduces needs the issue,
+not a checkout, and an issue old enough to be the oldest thing in a backlog is often
+fixed already — a ClickHouse-sized clone is a lot to pay for that verdict. The session
+opens in an empty directory of its own on `Reproduce <issue>`, the shape the review
+prompt uses: name the task, leave what it means to the agent. The pull request comes
+after the verdict, and `./claude.py <pr-url>` then names its directory for the PR.
 
 Relaunching a project takes it over. A container is named for its project, so the
 launch stops the one already running and resumes its session here, in the terminal you
