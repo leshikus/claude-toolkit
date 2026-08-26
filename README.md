@@ -13,11 +13,19 @@ log you walk afterward in a single review window.
 ## Use it
 
 ```bash
-./claude.py            # working session (auto mode)
+./claude.py            # working session (auto mode) in the current directory
+./claude.py <pr-url>   # session on that pull request, checked out for you
 ./claude.py --review   # one window over the writes log — review everything after the fact
 
 python3 -m unittest discover tests   # unit tests
 ```
+
+Given a pull request URL, the launcher does the setup you would otherwise type: syncs
+the repo if it is a fork, clones it under `projects/pr<N>/repo` — the same place the
+monitor puts a per-PR console, so both routes land in one directory — checks the PR
+out, and opens the session there. What it opens *on* depends on whose PR it is,
+decided by the token's own login: your own starts on what is left to finish it,
+anyone else's on reviewing it.
 
 Run the working session and let it work. A push goes out the moment it passes the
 pre-push review, so CI starts immediately — no approval queue in the hot path. When

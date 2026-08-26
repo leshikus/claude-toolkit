@@ -31,6 +31,7 @@ after a successful push. The host monitor also watches open PRs.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -237,6 +238,51 @@ def read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+PR_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)")
+
+
+def gh_json(*args) -> dict:
+    """Parsed JSON from a `gh` command, or exit reporting its own error."""
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"error: gh {' '.join(args)} failed: {r.stderr.strip()}")
+    return json.loads(r.stdout)
+
+
+def stage_pr(url: str):
+    """Check the PR out under APP_DIR and return (its checkout, the opening prompt).
+
+    A pull request is either yours to finish or someone else's to read, and that
+    decides what the session opens on. The token's own login is what tells them
+    apart -- nothing about the URL does.
+
+    The checkout lives at projects/pr<N>/repo, the same place the monitor puts a
+    per-PR console, so both routes to a PR land in one directory and `claude.py`
+    already reads the project name from it. A fork is synced first: its default
+    branch going stale is what makes a local checkout diverge from what CI ran.
+    """
+    m = PR_URL.match(url)
+    if not m:
+        sys.exit(f"error: not a GitHub pull request URL: {url}")
+    repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
+    if gh_json("repo", "view", repo, "--json", "isFork")["isFork"]:
+        run_or_exit(["gh", "repo", "sync", repo])
+    author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
+    checkout = APP_DIR / "projects" / f"pr{number}" / "repo"
+    checkout.mkdir(parents=True, exist_ok=True)
+    if not (checkout / ".git").exists():
+        run_or_exit(["gh", "repo", "clone", repo, "."], cwd=checkout)
+    run_or_exit(["gh", "pr", "checkout", number], cwd=checkout)
+    mine = author == gh_json("api", "user")["login"]
+    return checkout, (f"What should we do to finalize {url}?" if mine else f"Review {url}")
+
+
+def run_or_exit(argv: list, cwd=None) -> None:
+    """Run `argv` with its output on our own terminal; exit if it fails."""
+    if subprocess.run(argv, cwd=cwd).returncode:
+        sys.exit(f"error: {' '.join(str(a) for a in argv)} failed")
+
+
 def pull_toolkit() -> None:
     """Fast-forward the toolkit checkout so committed updates apply on launch.
 
@@ -256,6 +302,9 @@ def pull_toolkit() -> None:
 def main() -> None:
     review_mode = "--review" in sys.argv[1:]
     claude_args = [a for a in sys.argv[1:] if a != "--review"]
+    pr_url = next((a for a in claude_args if a.startswith("http")), None)
+    if pr_url:
+        claude_args.remove(pr_url)
 
     pull_toolkit()
     APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -264,7 +313,13 @@ def main() -> None:
     # host monitor). The whole dir is mounted at the container's
     # ~/.config/claude-toolkit/project, so the hooks need no project logic. Create the
     # queue dirs so the bind mount attaches real dirs, not new root-owned ones.
-    cwd = Path.cwd()
+    # A PR URL brings its own checkout and opening prompt; otherwise the session works
+    # in whatever directory it was launched from.
+    if pr_url:
+        cwd, prompt = stage_pr(pr_url)
+        claude_args.append(prompt)
+    else:
+        cwd = Path.cwd()
     projects_dir = APP_DIR / "projects"
     # A monitor-bootstrapped per-PR checkout lives at projects/<name>/repo; its
     # project state (queues, meta.json) is the parent dir, so the project name is
