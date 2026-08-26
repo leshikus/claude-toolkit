@@ -248,6 +248,12 @@ class HistoryDirTest(unittest.TestCase):
             self.where(monitor.CONTAINER_WORKDIR, "Project name: cr26.6\nbranch: main"),
             "~/repos/cr26.6")
 
+    def test_a_checkout_of_ours_is_labelled_by_its_project(self):
+        """projects/<name>/repo is a PR we cloned, not a directory the user works in."""
+        self.claim("ClickHouse-7", str(self.projects / "ClickHouse-7" / "repo"))
+        self.assertEqual(
+            self.where(monitor.CONTAINER_WORKDIR, "Project name: ClickHouse-7"), "ClickHouse-7")
+
     def test_an_unclaimed_container_session_keeps_the_project_name(self):
         self.assertEqual(
             self.where(monitor.CONTAINER_WORKDIR, "Project name: cr26.6\nbranch: main"),

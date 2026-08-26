@@ -40,7 +40,7 @@ class StagePrTest(unittest.TestCase):
 
     def test_my_own_pr_opens_on_finishing_it(self):
         checkout, prompt = claude.stage_pr(URL)
-        self.assertEqual(checkout, self.app / "projects" / "pr7" / "repo")
+        self.assertEqual(checkout, self.app / "projects" / "ClickHouse-7" / "repo")
         self.assertIn("finalize", prompt)
         self.assertIn(URL, prompt)
 
@@ -48,12 +48,18 @@ class StagePrTest(unittest.TestCase):
         self.author = "alexey-milovidov"
         self.assertEqual(claude.stage_pr(URL)[1], f"Review {URL}")
 
+    def test_the_name_carries_the_repo_because_a_number_alone_is_not_unique(self):
+        """ClickHouse#7 and clickhouse-private#7 must not share a queue or a checkout."""
+        other = "https://github.com/ClickHouse/clickhouse-private/pull/7"
+        self.assertNotEqual(claude.stage_pr(URL)[0], claude.stage_pr(other)[0])
+        self.assertEqual(claude.stage_pr(other)[0].parent.name, "clickhouse-private-7")
+
     def test_the_checkout_is_cloned_then_the_pr_checked_out(self):
         claude.stage_pr(URL)
         self.assertEqual(self.ran, [["gh", "repo", "clone"], ["gh", "pr", "checkout"]])
 
     def test_an_existing_checkout_is_not_recloned(self):
-        (self.app / "projects" / "pr7" / "repo" / ".git").mkdir(parents=True)
+        (self.app / "projects" / "ClickHouse-7" / "repo" / ".git").mkdir(parents=True)
         claude.stage_pr(URL)
         self.assertEqual(self.ran, [["gh", "pr", "checkout"]])
 

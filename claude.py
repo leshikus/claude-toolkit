@@ -256,7 +256,7 @@ def stage_pr(url: str):
     decides what the session opens on. The token's own login is what tells them
     apart -- nothing about the URL does.
 
-    The checkout lives at projects/pr<N>/repo, the same place the monitor puts a
+    The checkout lives at projects/<repo>-<N>/repo, the same place the monitor puts a
     per-PR console, so both routes to a PR land in one directory and `claude.py`
     already reads the project name from it. A fork is synced first: its default
     branch going stale is what makes a local checkout diverge from what CI ran.
@@ -265,10 +265,13 @@ def stage_pr(url: str):
     if not m:
         sys.exit(f"error: not a GitHub pull request URL: {url}")
     repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
+    # Same name monitor.py's _pr_project builds, so a PR reached by either route is one
+    # project: a number alone is unique only within a repo.
+    project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-{number}")
     if gh_json("repo", "view", repo, "--json", "isFork")["isFork"]:
         run_or_exit(["gh", "repo", "sync", repo])
     author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
-    checkout = APP_DIR / "projects" / f"pr{number}" / "repo"
+    checkout = APP_DIR / "projects" / project / "repo"
     checkout.mkdir(parents=True, exist_ok=True)
     if not (checkout / ".git").exists():
         run_or_exit(["gh", "repo", "clone", repo, "."], cwd=checkout)

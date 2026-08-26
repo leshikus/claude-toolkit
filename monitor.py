@@ -533,17 +533,15 @@ def _latest_foreign_activity(detail: dict, login: str) -> str:
 
 
 def _pr_project(pr: dict) -> str:
-    """Project name for a PR: ``pr<number>``, disambiguated on a cross-repo clash.
+    """Project name for a PR: ``<repo>-<number>``.
 
-    Per-PR state and its checkout live under projects/<name>/. Two different repos
-    can share a PR number, so if projects/pr<n>/ already claims a *different* PR we
-    fall back to ``pr<n>-<repo>``.
+    Per-PR state and its checkout live under projects/<name>/, so the name has to be
+    unique: a PR number is unique only within its repo, and ClickHouse/ClickHouse and
+    ClickHouse/clickhouse-private overlap constantly. Naming the repo makes a clash
+    impossible instead of something to detect after the fact -- and says which repo
+    without a lookup. `claude.py` builds the same name for a PR opened by URL.
     """
-    base = f"pr{pr['number']}"
-    claimed = (_load_json(PROJECTS_DIR / base / "meta.json", {}).get("pr") or {}).get("key")
-    if claimed and claimed != _pr_key(pr):
-        return re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{base}-{pr['repository']['name']}")
-    return base
+    return re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{pr['repository']['name']}-{pr['number']}")
 
 
 def _meta_pr_claims() -> dict:
@@ -929,13 +927,17 @@ def _history_dir(session_start: str, cwd: str, path: Path) -> str:
 
     The transcript's own cwd, except for a container session: there it is the fixed
     CONTAINER_WORKDIR and names nothing, so the host checkout is read from the
-    project's meta.json, which claude.py wrote at launch.
+    project's meta.json, which claude.py wrote at launch. A checkout under projects/
+    is one we made for a PR rather than a directory you work in, and its path is far
+    too long to label a line with, so those answer with the project name.
     """
     if cwd and cwd.rstrip("/") != CONTAINER_WORKDIR:
         return _tilde(cwd)
     project = _history_project(session_start, cwd, path)
     host_dir = (_load_json(PROJECTS_DIR / project / "meta.json", {}) or {}).get("host_dir")
-    return _tilde(host_dir) if host_dir else project
+    if host_dir and PROJECTS_DIR not in Path(host_dir).parents:
+        return _tilde(host_dir)
+    return project  # a checkout of ours, not somewhere you work: its path names nothing
 
 
 def _distill_history(entries: list):
