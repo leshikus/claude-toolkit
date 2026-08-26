@@ -284,7 +284,10 @@ def stage_pr(url: str):
     else:
         checkout.mkdir(parents=True, exist_ok=True)
         run_step(["gh", "repo", "clone", repo, "."], cwd=checkout)
-    run_step(["gh", "pr", "checkout", number], cwd=checkout, fatal=False)
+    # --force: this checkout is ours and disposable, so matching the PR beats preserving
+    # whatever a previous session left on the branch. It does not touch an unclean
+    # working tree, which is why the step still only warns.
+    run_step(["gh", "pr", "checkout", number, "--force"], cwd=checkout, fatal=False)
     mine = author == gh_json("api", "user")["login"]
     return checkout, (f"What should we do to finalize {url}?" if mine else f"Review {url}")
 
@@ -296,6 +299,25 @@ def run_step(argv: list, cwd=None, fatal: bool = True) -> None:
         if fatal:
             sys.exit(f"error: {step} failed")
         print(f"warning: {step} failed -- opening the checkout as it stands", file=sys.stderr)
+
+
+def supersede(container: str) -> None:
+    """Stop any container already running this project, so the newest launch owns it.
+
+    Per-project state -- pending-reads, pending-monitoring, meta.json, the notification
+    stamp -- assumes one session at a time, and two sessions on one project do not
+    notice each other: `--resume` on a live session starts a second agent that
+    interleaves into the same transcript while both keep working. The monitor
+    self-supersedes for the same reason; this is that rule for sessions.
+    """
+    if subprocess.run(["docker", "rm", "-f", container],
+                      capture_output=True, text=True).returncode == 0:
+        print(f"superseded the session already running in {container}")
+
+
+def resumable(session: str) -> bool:
+    """True if `session` still has a transcript to resume; a stale id would abort the launch."""
+    return bool(session) and any((HOME / ".claude" / "projects").glob(f"*/{session}.jsonl"))
 
 
 def pull_toolkit() -> None:
@@ -378,6 +400,14 @@ def main() -> None:
         meta = {}
     meta["host_dir"] = str(cwd)
     meta_file.write_text(json.dumps(meta) + "\n")
+
+    # One container per project, named for it, so this launch can take the project over
+    # from whatever terminal was holding it and carry on the same conversation.
+    container = f"toolkit-{project}"
+    supersede(container)
+    if resumable(meta.get("session_id")) and "--resume" not in claude_args:
+        claude_args = ["--resume", meta["session_id"], *claude_args]
+        print(f"resuming session {meta['session_id']}")
 
     # Always build: Docker's layer cache makes this a fast no-op when nothing in
     # the build context changed, and it picks up Dockerfile edits.
@@ -505,7 +535,7 @@ def main() -> None:
     )
     gnupg_copy = stage_gnupg()
     docker_args = [
-        "docker", "run", "--rm", *tty_flags,
+        "docker", "run", "--rm", "--name", container, *tty_flags,
         "-e", "HOME=/home/ubuntu",
         "-w", workdir,
         "-v", f"{cwd}:{workdir}:rw",

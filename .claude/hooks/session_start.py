@@ -128,6 +128,34 @@ def pr_view(branch):
     )
 
 
+def merge_meta(**fields) -> None:
+    """Merge `fields` into the project's meta.json, which is mounted rw to the host."""
+    try:
+        data = json.loads(META_FILE.read_text())
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data.update(fields)
+    try:
+        META_FILE.write_text(json.dumps(data) + "\n")
+    except OSError as exc:
+        print(f"(could not write {META_FILE}: {exc})", file=sys.stderr)
+
+
+def record_session(event: dict) -> None:
+    """Record this session's id, so a relaunch of the project can resume it.
+
+    Per-project state -- the queues, the notification stamp, this file -- assumes one
+    session at a time, and two sessions on one project do not notice each other: they
+    interleave into the same transcript and take turns overwriting the stamp. So
+    claude.py supersedes the incumbent and resumes it here instead, and the id is the
+    only thing it needs that only the session knows.
+    """
+    if event.get("session_id"):
+        merge_meta(session_id=event["session_id"])
+
+
 def record_pr_meta(pr):
     """Record this branch's PR into the project's meta.json (merging).
 
@@ -141,23 +169,13 @@ def record_pr_meta(pr):
     if not m:
         return
     owner, name, number = m.group(1), m.group(2), m.group(3)
-    try:
-        data = json.loads(META_FILE.read_text())
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-    data["pr"] = {
+    merge_meta(pr={
         "key": f"{owner}/{name}#{number}",
         "repo": f"{owner}/{name}",
         "number": int(number),
         "url": pr.get("url"),
         "title": pr.get("title"),
-    }
-    try:
-        META_FILE.write_text(json.dumps(data) + "\n")
-    except OSError as exc:
-        print(f"(could not record PR in {META_FILE}: {exc})", file=sys.stderr)
+    })
 
 
 def report_pr(pr, lines):
@@ -280,6 +298,11 @@ def finish(lines):
 
 
 def main():
+    try:
+        record_session(json.load(sys.stdin))
+    except (json.JSONDecodeError, ValueError, OSError):
+        pass  # orientation is the job here; a missing id only costs a resume
+
     lines = ["=== session-start orientation ==="]
     # Always surface the project name so the session knows which project it is in,
     # even outside a git repo. The repo mounts at the fixed /home/ubuntu/project, so

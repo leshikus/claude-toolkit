@@ -20,10 +20,10 @@ class StagePrTest(unittest.TestCase):
         self.app = Path(tempfile.mkdtemp())
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(claude, "APP_DIR", self.app).start()
-        self.ran = []
+        self.ran, self.forced = [], []
         mock.patch.object(claude, "run_step",
                           side_effect=lambda argv, cwd=None, fatal=True:
-                          self.ran.append(argv[:3])).start()
+                          (self.ran.append(argv[:3]), self.forced.extend(argv[3:]))).start()
         self.fork, self.author = False, ME
         mock.patch.object(claude, "gh_json", side_effect=self.gh).start()
 
@@ -64,6 +64,7 @@ class StagePrTest(unittest.TestCase):
         (self.app / "projects" / "ClickHouse-7" / "repo" / ".git").mkdir(parents=True)
         claude.stage_pr(URL)
         self.assertEqual(self.ran, [["git", "fetch", "--prune"], ["gh", "pr", "checkout"]])
+        self.assertIn("--force", self.forced)
 
     def test_only_the_clone_is_fatal(self):
         """A failed sync or checkout still leaves a repository the session can work in."""
@@ -86,3 +87,44 @@ class StagePrTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SupersedeTest(unittest.TestCase):
+    """One session per project: per-project state assumes it, and two do not notice
+    each other -- `--resume` on a live session leaves both agents working."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        (self.home / ".claude" / "projects" / "-home-ubuntu-project").mkdir(parents=True)
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(claude, "HOME", self.home).start()
+
+    def transcript(self, session: str) -> None:
+        (self.home / ".claude" / "projects" / "-home-ubuntu-project" / f"{session}.jsonl").touch()
+
+    def test_a_session_with_a_transcript_is_resumable(self):
+        self.transcript("abc-123")
+        self.assertTrue(claude.resumable("abc-123"))
+
+    def test_a_stale_id_is_not_resumable(self):
+        """`claude --resume` on an unknown id aborts, which would kill the launch."""
+        self.assertFalse(claude.resumable("abc-123"))
+
+    def test_no_recorded_session_is_not_resumable(self):
+        self.assertFalse(claude.resumable(None))
+
+    def test_superseding_reports_only_when_it_removed_something(self):
+        with mock.patch.object(claude.subprocess, "run",
+                               return_value=mock.Mock(returncode=1)) as run:
+            with mock.patch("builtins.print") as out:
+                claude.supersede("toolkit-ClickHouse-7")
+        run.assert_called_once_with(["docker", "rm", "-f", "toolkit-ClickHouse-7"],
+                                    capture_output=True, text=True)
+        out.assert_not_called()
+
+    def test_superseding_says_so_when_a_container_was_running(self):
+        with mock.patch.object(claude.subprocess, "run",
+                               return_value=mock.Mock(returncode=0)):
+            with mock.patch("builtins.print") as out:
+                claude.supersede("toolkit-ClickHouse-7")
+        self.assertIn("superseded", out.call_args.args[0])

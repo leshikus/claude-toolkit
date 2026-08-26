@@ -26,7 +26,15 @@ monitor puts a per-PR console, so both routes land in one directory — checks t
 out, and opens the session there. A checkout that is already present is fetched
 rather than recloned — these are ClickHouse-sized repositories — and only the clone is
 fatal: a failed sync, fetch or checkout still leaves something to work in, so the
-session opens and is told what went wrong. The directory is named `<repo>-<number>`, because a
+session opens and is told what went wrong. The checkout is forced to match the PR:
+it belongs to the toolkit, so tracking the remote beats preserving whatever the last
+session left on the branch.
+
+Relaunching a project takes it over. A container is named for its project, so the
+launch stops the one already running and resumes its session here, in the terminal you
+typed in — `--resume` alone would not have: it starts a second agent on the same
+transcript and leaves both working. Per-project state assumes one session, the same way
+the monitor allows one instance. The directory is named `<repo>-<number>`, because a
 PR number is unique only inside its repo and `ClickHouse` and `clickhouse-private`
 overlap constantly. What it opens *on* depends on whose PR it is,
 decided by the token's own login: your own starts on what is left to finish it,
