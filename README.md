@@ -33,6 +33,14 @@ session opens and is told what went wrong. The checkout is forced to match the P
 it belongs to the toolkit, so tracking the remote beats preserving whatever the last
 session left on the branch.
 
+An issue URL is turned into a pull request first: a branch, one empty commit, and a
+draft PR whose body is `Fixes <url>`. There is nothing to describe until the fix
+exists, and this way the branch, the PR to push to and the CI that follows all exist
+before the first turn rather than being set up during it. The session opens on
+`Reproduce <issue>, then finalize <pr>` — the shape the review prompt uses, naming the
+task and leaving what it means to the agent. An issue old enough to be the oldest thing
+in a backlog is often fixed already, and that is a judgment about the code.
+
 Relaunching a project takes it over. A container is named for its project, so the
 launch stops the one already running and resumes its session here, in the terminal you
 typed in — `--resume` alone would not have: it starts a second agent on the same
