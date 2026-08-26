@@ -36,6 +36,8 @@ import shutil
 import subprocess
 import sys
 import time
+
+import gitstore
 from pathlib import Path
 
 IMAGE = "claude-toolkit:latest"
@@ -282,13 +284,23 @@ def stage_issue(m, url: str):
 
 
 def clone_or_fetch(repo: str, checkout: Path) -> Path:
-    """Clone `repo` into `checkout`, or bring an existing clone forward. Returns it."""
+    """Clone `repo` into `checkout`, or bring an existing clone forward. Returns it.
+
+    The clone borrows its objects from the shared mirror when there is one, so it costs
+    a working tree instead of 7.3 GB. The monitor keeps those mirrors warm; this asks
+    for one anyway, for the first launch on a repo the monitor has not seen.
+    """
     if (checkout / ".git").exists():
         print(f"reusing {checkout}")
         run_step(["git", "fetch", "--prune", "origin"], cwd=checkout, fatal=False)
-    else:
-        checkout.mkdir(parents=True, exist_ok=True)
-        run_step(["gh", "repo", "clone", repo, "."], cwd=checkout)
+        return checkout
+    checkout.mkdir(parents=True, exist_ok=True)
+    gitstore.refresh(repo)
+    borrow = gitstore.reference(repo)
+    if borrow:
+        print(f"borrowing objects from {gitstore.mirror(repo)}")
+    run_step(["gh", "repo", "clone", repo, ".", *(["--", *borrow] if borrow else [])],
+             cwd=checkout)
     return checkout
 
 
@@ -639,6 +651,9 @@ def main() -> None:
         "-v", f"{notify_log}:/home/ubuntu/.config/claude-toolkit/notifications.log:ro",
         "-v", f"{picks_file}:/home/ubuntu/.config/claude-toolkit/backlog-picks.txt:ro",
         "-v", f"{config_dir}:/home/ubuntu/.config/claude-toolkit/config:rw",
+        # The shared git store, at the identical absolute path: a borrowing checkout
+        # records it in objects/info/alternates, and git resolves that literally.
+        *(["-v", f"{gitstore.STORE}:{gitstore.STORE}:ro"] if gitstore.STORE.is_dir() else []),
         # --review only: every project's dir (meta.json + per-PR checkouts).
         *review_mount,
         # Private copy of the GPG keyring so the container can sign commits without

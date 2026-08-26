@@ -26,6 +26,13 @@ class StagePrTest(unittest.TestCase):
                           (self.ran.append(argv[:3]), self.forced.extend(argv[3:]))).start()
         self.fork, self.author = False, ME
         mock.patch.object(claude, "gh_json", side_effect=self.gh).start()
+        # The store reaches GitHub; a unit test must never make it do so.
+        self.borrow = []
+        mock.patch.object(claude.gitstore, "refresh", return_value="fetched").start()
+        mock.patch.object(claude.gitstore, "reference",
+                          side_effect=lambda repo: self.borrow).start()
+        mock.patch.object(claude.gitstore, "mirror",
+                          side_effect=lambda repo: Path("/store") / repo).start()
 
     def gh(self, *args):
         if args[0] == "repo":
@@ -82,6 +89,17 @@ class StagePrTest(unittest.TestCase):
         other = "https://github.com/ClickHouse/clickhouse-private/pull/7"
         self.assertNotEqual(claude.stage_pr(URL)[0], claude.stage_pr(other)[0])
         self.assertEqual(claude.stage_pr(other)[0].parent.name, "clickhouse-private-7")
+
+    def test_a_clone_borrows_the_shared_objects_when_a_mirror_exists(self):
+        """7.3 GB of objects per PR is the thing the store exists to avoid."""
+        self.borrow = ["--reference", "/store/ClickHouse-ClickHouse.git"]
+        claude.stage_pr(URL)
+        self.assertEqual(self.ran[0], ["gh", "repo", "clone"])
+        self.assertIn("--reference", self.forced)
+
+    def test_a_clone_without_a_mirror_is_a_plain_one(self):
+        claude.stage_pr(URL)
+        self.assertNotIn("--reference", self.forced)
 
     def test_the_checkout_is_cloned_then_the_pr_checked_out(self):
         claude.stage_pr(URL)

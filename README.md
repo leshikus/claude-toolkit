@@ -27,7 +27,14 @@ project however you reach it, and a second clone would split its queues, its
 notification stamp and its session in two. Otherwise it syncs the repo if it is a fork,
 clones it under `projects/<repo>-<N>/repo` — the same place the monitor puts a per-PR
 console — checks the PR out, and opens the session there. A checkout that is already present is fetched
-rather than recloned — these are ClickHouse-sized repositories — and only the clone is
+rather than recloned, and a fresh one borrows its objects from a shared bare mirror
+under `git-store/` rather than transferring them: a ClickHouse `.git` is 7.3 GB and
+there are dozens of these checkouts. The monitor keeps those mirrors fetched on a
+schedule, so a launch never waits for a first clone, and both callers take a lock —
+git will not corrupt a mirror under concurrent fetches, but it fails the loser, and a
+failed refresh costs the caller the 7.3 GB it could have borrowed. The store is mounted
+into the container at the identical absolute path, because `objects/info/alternates`
+records it absolutely and git resolves it literally. Only the clone is
 fatal: a failed sync, fetch or checkout still leaves something to work in, so the
 session opens and is told what went wrong. The checkout is forced to match the PR:
 it belongs to the toolkit, so tracking the remote beats preserving whatever the last

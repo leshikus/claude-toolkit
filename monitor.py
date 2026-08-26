@@ -90,6 +90,7 @@ import time
 from collections import Counter, deque
 from pathlib import Path
 
+import gitstore
 from term import TERMINAL, Hyperlink
 
 APP_DIR = Path(os.path.expanduser("~/.config/claude-toolkit"))
@@ -131,6 +132,7 @@ ACTIVE_POLL = 60     # how often a deferred event looks to see whether you came 
 PICKS_DOC = REPO_DIR / ".claude" / "modes" / "backlog-picks.md"  # the generic task
 PICKS_STATE_FILE = APP_DIR / "backlog-picks.json"  # last run, so a restart does not re-run
 PICKS_FILE = APP_DIR / "backlog-picks.txt"  # the current pair, rewritten every cycle
+STORE_INTERVAL = 1800  # seconds between fetches of every mirror in the shared git store
 PICKS = ("oldest", "highest")  # the labels it answers with, and the order they print in
 PICKS_INTERVAL = 900          # seconds between selections
 PICKS_RETRY = 900             # ... but a selection that failed must not cost a whole cycle
@@ -1582,6 +1584,50 @@ def _picks(out: str) -> dict:
     return found
 
 
+def _tracked_repos() -> list:
+    """Every repo the projects have claimed a PR in, newest claim first.
+
+    Self-configuring: what you work on is already recorded in meta.json, so the store
+    holds mirrors of those repos and nothing else.
+    """
+    seen = {}
+    for meta in sorted(PROJECTS_DIR.glob("*/meta.json"), key=lambda p: -p.stat().st_mtime):
+        repo = ((_load_json(meta, {}) or {}).get("pr") or {}).get("repo")
+        if repo and re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+            seen[repo] = True
+    return list(seen)
+
+
+class GitStoreEvent(Event):
+    """Keep a bare mirror of every tracked repo, for per-PR checkouts to borrow from.
+
+    A per-PR checkout clones with `--reference` against these, so it carries a working
+    tree and almost no object database of its own. The mirror is fetched here rather
+    than at launch: the first clone of a ClickHouse-sized repo is minutes, and a session
+    should never wait for it. `claude.py` calls the same `gitstore.refresh`, and the two
+    take a lock rather than racing.
+
+    Not gated on you being at the keyboard -- unlike the jobs that exist to print a
+    line, this one serves the next launch, and a mirror going stale while you are away
+    is the whole thing it is meant to prevent. Re-arms every STORE_INTERVAL.
+    """
+
+    priority = 9
+
+    def fire(self) -> None:
+        try:
+            for repo in _tracked_repos():
+                self._refresh(repo)
+        except Exception as exc:  # keep the loop alive across transient failures
+            print(f"monitor: git store failed: {exc}", file=sys.stderr)
+        self.arm(STORE_INTERVAL)
+
+    def _refresh(self, repo: str) -> None:
+        """Fetch or create `repo`'s mirror, announcing only the one you waited for."""
+        if gitstore.refresh(repo) == "created":
+            _notify("git store", f"mirrored {repo}")
+
+
 class BacklogPicksEvent(Event):
     """Post what has waited on you longest, and what is worth doing first.
 
@@ -1662,6 +1708,7 @@ def main() -> int:
         PrStartEvent(scheduler).arm(0)         # a session starting on a PR -> clickable link
         GithubLinksEvent(scheduler).arm(0)     # links mentioned in a chat -> clickable links
         BacklogPicksEvent(scheduler).arm(0)    # longest-waiting + do-this-first -> clickable links
+        GitStoreEvent(scheduler).arm(0)        # bare mirrors for per-PR checkouts to borrow
         # Recurring events re-arm themselves, so the queue never empties and run()
         # blocks forever -- until the process is killed.
         scheduler.run()
