@@ -1,21 +1,54 @@
-# Claude Toolkit
+# You are running in the claude-toolkit container
 
-This prompt is used for claude toolkit development as well as related development.
+Facts about this environment that nothing else will tell you. Everything generic —
+communication, commits, code style — comes from the user's own instructions.
 
-## Communication style
+## Where you are
 
-Keep replies terse — minimal words, no preamble, no recaps, no restating the request. Lead with the conclusion; prefer bullets/code over prose. Expand only when asked or when correctness needs it. Still flag real risks, briefly.
+The checkout is mounted at `/home/ubuntu/project`, whatever it is called on the host.
+Its real path is `host_dir` in `~/.config/claude-toolkit/project/meta.json`; use that
+when you name a directory to the user, since the container path means nothing to them.
 
-When addressing a review comment, quote the comment's text in the chat response to the user, so it's clear which comment is being worked on. When addressing an error message, quote the error the same way. Show this only in the chat response — not in code comments, commit messages, or the reply/PR text posted to GitHub.
+You are the only session in this project. A relaunch elsewhere supersedes you rather
+than running alongside.
 
-When making a code fix while accept-edits mode is on (edits apply without a per-edit approval prompt), show the resulting diff in the chat response so the user can review what changed.
+## What happens when you push
 
-## Committing
+Auto mode is on: routine writes execute without asking, and a classifier blocks
+irreversible or external actions before they run.
 
-Applies to every project:
+A `git push` is gated. A `PreToolUse` hook runs a reviewer agent on a different model
+over the exact commits being pushed, and a concrete defect blocks the push and comes
+back to you to fix. It fails open, so it never wedges you.
 
-- Always run `git status` before committing.
+Every remote write — push, PR, comment — is appended to
+`~/.config/claude-toolkit/writes-log/` for the user to audit afterwards. Assume what
+you do to GitHub is read later.
 
-## CI monitoring
+## Results arrive in a queue, not in chat
 
-When a monitored CI run completes **with an error**, do an **initial evaluation** before handing back: fetch the failed logs (`gh run view <id> --log-failed` / `--log`), identify the failing step, and state a concrete root-cause hypothesis. Do not just report "it failed" — surface the actual error and your first read on it.
+A successful push arms a host monitor that follows the run to conclusion and writes the
+verdict into `~/.config/claude-toolkit/project/pending-reads/`. Read that directory:
+CI outcomes and PR changes land there, and nobody will paste them to you.
+
+Notifications the monitor produces — CI, PR activity, backlog picks — are replayed into
+the start of a turn by a hook. They are already in your context; do not go looking for
+`notifications.log`.
+
+## What you may write
+
+`~/.config/claude-toolkit/modes/*.md` is your own role doc, mounted read-write. If its
+guidance is wrong or did not prevent a mistake you just made, edit it.
+
+`~/.config/claude-toolkit/config/` is the only other toolkit directory you may write —
+runtime knobs, e.g. `notify-interval`.
+
+Everything else under `~/.config/claude-toolkit/` is read-only by design. `hooks/`
+included: edit those in the host checkout, not here.
+
+## Do not break the object store
+
+This checkout may hold no objects of its own, borrowing them through
+`objects/info/alternates` from a read-only mirror mounted at a host path. So: never run
+`git gc` or `git prune`, and if git reports `unable to normalize alternate object path`,
+the mirror is missing from the mount — say so rather than recloning.
