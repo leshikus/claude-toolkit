@@ -562,15 +562,15 @@ def _meta_pr_claims() -> dict:
 
 
 def _pr_link(pr: dict) -> str:
-    """A PR as an OSC 8 hyperlink over `PR #<n>: <title>`, for the notification log.
+    """A PR as `PR #<n>: <title> (<url>)`, for the notification log.
 
-    `format` rather than `render`: the monitor's own stdout is detached and says
-    nothing about the terminal that will show the line, which is whichever one the
-    notify_tail hook replays it into.
+    Escape-free on purpose: the log is read by the notify_tail hook and rendered in
+    a Claude Code console, which strips an OSC 8 sequence and with it the URL. Since
+    the tailing terminal tab is gone, nothing downstream renders one.
     """
     title = _clip(pr.get("title") or "", PR_TITLE_CHARS)
-    return Hyperlink.format(f"PR #{pr['number']}" + (f": {title}" if title else ""),
-                            pr.get("url"))
+    return Hyperlink.plain(f"PR #{pr['number']}" + (f": {title}" if title else ""),
+                           pr.get("url"))
 
 
 _ITEM_RE = re.compile(r"github\.com/([^/]+/[^/]+)/(?:pull|issues)/(\d+)")
@@ -596,7 +596,7 @@ def _item_link(url: str) -> str:
     """
     m = _ITEM_RE.search(url)
     title = _api_title(f"/repos/{m.group(1)}/issues/{m.group(2)}") if m else ""
-    return Hyperlink.format(title, url) if title else url
+    return Hyperlink.plain(title, url) if title else url
 
 
 def _pr_change_text(pr: dict, notes: list) -> str:
@@ -724,7 +724,7 @@ class PullRequestsEvent(Event):
             self.last_digest = now
             lines = [f"{len(prs)} open, {len(action)} action required"]
             for pr, reason in sorted(action, key=lambda pa: _pr_key(pa[0])):
-                link = Hyperlink.format(_pr_key(pr), pr.get("url"))
+                link = Hyperlink.plain(_pr_key(pr), pr.get("url"))
                 lines.append(f"  ⚠ {link} — {reason}")
             _notify("Open pull requests", "\n".join(lines))
 
@@ -1553,7 +1553,7 @@ class GithubLinksEvent(Event):
             posted.add(key)
             fresh.append((key, url))
         for _, url in fresh[:LINK_MAX_PER_SCAN]:
-            _notify(mark["dir"], Hyperlink.format(_github_text(url), url))
+            _notify(mark["dir"], Hyperlink.plain(_github_text(url), url))
         if len(fresh) > LINK_MAX_PER_SCAN:
             _notify(mark["dir"],
                     f"{len(fresh) - LINK_MAX_PER_SCAN} more GitHub links mentioned, not shown")

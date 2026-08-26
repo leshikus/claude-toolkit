@@ -70,7 +70,7 @@ class NotifyTailTest(unittest.TestCase):
     def test_the_picks_print_as_their_own_section(self):
         self.picks.write_text("oldest — A (https://x/1)\nhighest — B (https://x/2)\n")
         out = self.run_hook()
-        self.assertIn("backlog\n  oldest — A (https://x/1)\n  highest — B (https://x/2)", out)
+        self.assertIn("backlog\n  oldest — A\n      https://x/1\n  highest — B\n      https://x/2", out)
 
     def test_a_changed_pick_speaks_even_though_the_log_is_quiet(self):
         self.log.write_text("first\n")
@@ -80,7 +80,7 @@ class NotifyTailTest(unittest.TestCase):
             {"at": 1, "size": 6, "picks": "oldest — A (https://x/1)"}))
         self.assertEqual(self.run_hook(), "")   # nothing moved
         self.picks.write_text("oldest — B (https://x/2)\n")
-        self.assertIn("oldest — B (https://x/2)", self.run_hook())
+        self.assertIn("oldest — B\n      https://x/2", self.run_hook())
 
     def test_the_picks_repeat_with_each_replay_rather_than_stacking_up(self):
         """They are state: the current pair, not one line per selection cycle."""
@@ -91,13 +91,22 @@ class NotifyTailTest(unittest.TestCase):
         self.log.write_text("first\nsecond\n")
         second = self.run_hook()
         for out in (first, second):
-            self.assertEqual(out.count("oldest — A (https://x/1)"), 1)
+            self.assertEqual(out.count("oldest — A\n      https://x/1"), 1)
 
-    def test_the_escape_reaches_the_terminal_untouched(self):
-        """The OSC 8 sequence is the link; mangling it here would be the one fatal edit."""
+    def test_a_url_gets_a_row_to_itself(self):
+        self.log.write_text(
+            "2026-08-25 12:00:00  ~/repos/x — A title (https://github.com/o/r/pull/7)\n")
+        self.assertEqual(self.run_hook().splitlines()[1:],
+                         ["  12:00  ~/repos/x — A title",
+                          "      https://github.com/o/r/pull/7"])
+
+    def test_an_escape_the_monitor_already_wrote_is_flattened(self):
+        """The log still holds lines from when it emitted OSC 8; the console eats those."""
         link = "\x1b]8;;https://github.com/o/r/pull/7\x1b\\A title\x1b]8;;\x1b\\"
-        self.log.write_text(f"2026-08-25 12:00:00  ~/repos/x — {link}\n")
-        self.assertEqual(self.run_hook().splitlines()[1:], [f"  12:00  ~/repos/x — {link}"])
+        self.log.write_text(f"2026-08-26 12:00:00  ~/repos/x — {link}\n")
+        self.assertEqual(self.run_hook().splitlines()[1:],
+                         ["  12:00  ~/repos/x — A title",
+                          "      https://github.com/o/r/pull/7"])
 
     def test_a_line_without_a_url_stays_one_row(self):
         self.log.write_text("2026-08-25 12:00:00  hint x — Install node\n")

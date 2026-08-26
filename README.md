@@ -61,13 +61,15 @@ GitHub — a URL says only where a thing lives:
 ```
 monitor — most recent last
   09:02  ~/repos/master-push — Push the release changelog and version bump to master
+      https://github.com/ClickHouse/ClickHouse/pull/113528
   09:02  ~/repos/cr26.6 — CreateRelease
+      https://github.com/ClickHouse/ClickHouse/actions/runs/32462474552
 ```
 
-The link is an OSC 8 escape over the item's title, written by `term.py` and passed
-through the hook untouched, so the terminal renders an underlined title and the URL
-never has to be shown. Markdown would not do: the console prints `[title](url)`
-verbatim. `term.py` owns both renderings, and
+The URL is written out rather than hidden behind an OSC 8 escape, and it keeps a row
+of its own. The console destroys the escape, so bare text is the only link there is,
+and a terminal linkifies only a URL it can see whole — a hard wrap splits it into two
+things that are neither. `term.py` owns both renderings, and
 every call to the terminal application itself — the per-PR consoles the monitor
 opens — behind one `Term` instance detected per host (iTerm2 today).
 
@@ -104,7 +106,9 @@ the hook speaks.
 ```
 backlog
   oldest — Make a status for failing ccache
+      https://github.com/ClickHouse/ClickHouse/issues/46502
   highest — Rework AutoReleases into a praktika workflow
+      https://github.com/ClickHouse/ClickHouse/issues/85176
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an
