@@ -239,6 +239,16 @@ def read_json(path: Path) -> dict:
 
 
 PR_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)")
+ISSUE_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)")
+
+
+def gh_out(*args) -> str:
+    """stdout of a `gh` command, or "" if it failed, saying why."""
+    r = subprocess.run(["gh", *args], capture_output=True, text=True)
+    if r.returncode:
+        print(f"warning: gh {' '.join(args)} failed: {r.stderr.strip()}", file=sys.stderr)
+        return ""
+    return r.stdout.strip()
 
 
 def gh_json(*args) -> dict:
@@ -247,6 +257,63 @@ def gh_json(*args) -> dict:
     if r.returncode != 0:
         sys.exit(f"error: gh {' '.join(args)} failed: {r.stderr.strip()}")
     return json.loads(r.stdout)
+
+
+def stage_url(url: str):
+    """(checkout, opening prompt) for a pull request or issue URL.
+
+    An issue is turned into a draft pull request and then handled as one, so the whole
+    session -- the branch, the PR to push to, the CI that follows -- exists before the
+    first turn instead of being set up during it.
+    """
+    if PR_URL.match(url):
+        return stage_pr(url)
+    m = ISSUE_URL.match(url)
+    if not m:
+        sys.exit(f"error: not a GitHub pull request or issue URL: {url}")
+    return stage_issue(m, url)
+
+
+def stage_issue(m, url: str):
+    """Open a draft PR for an issue and return its checkout and prompt.
+
+    The pull request is a placeholder: an empty commit and `Fixes <url>` for a body,
+    because there is nothing to describe until the fix exists. Whether the issue still
+    reproduces is the first thing the session is asked, in the shape the review prompt
+    uses: name the task and leave what it means to the agent. An issue old enough to be
+    the oldest thing in a backlog is often already fixed, and that is a judgment about
+    the code, not one a launcher can make.
+
+    The checkout is named for the issue, since the PR number does not exist until the
+    branch is pushed. Once session_start records the PR claim, `project_claiming` finds
+    this directory again for the PR URL, so the two do not become separate projects.
+    """
+    repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
+    title = gh_json("issue", "view", number, "--repo", repo, "--json", "title")["title"]
+    project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-issue-{number}")
+    checkout = clone_or_fetch(repo, APP_DIR / "projects" / project / "repo")
+
+    branch = f"fix-{number}"
+    run_step(["git", "switch", "-C", branch], cwd=checkout)
+    run_step(["git", "commit", "--allow-empty", "-m", f"Fixes {url}"], cwd=checkout)
+    run_step(["git", "push", "-f", "-u", "origin", branch], cwd=checkout, fatal=False)
+    pr = gh_out("pr", "create", "--repo", repo, "--draft", "--head", branch,
+                "--title", title, "--body", f"Fixes {url}")
+    if not pr:
+        return checkout, f"Reproduce {url}"
+    print(f"opened {pr}")
+    return checkout, f"Reproduce {url}, then finalize {pr}"
+
+
+def clone_or_fetch(repo: str, checkout: Path) -> Path:
+    """Clone `repo` into `checkout`, or bring an existing clone forward. Returns it."""
+    if (checkout / ".git").exists():
+        print(f"reusing {checkout}")
+        run_step(["git", "fetch", "--prune", "origin"], cwd=checkout, fatal=False)
+    else:
+        checkout.mkdir(parents=True, exist_ok=True)
+        run_step(["gh", "repo", "clone", repo, "."], cwd=checkout)
+    return checkout
 
 
 def stage_pr(url: str):
@@ -285,15 +352,9 @@ def stage_pr(url: str):
     project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-{number}")
     if gh_json("repo", "view", repo, "--json", "isFork")["isFork"]:
         run_step(["gh", "repo", "sync", repo], fatal=False)
-    checkout = APP_DIR / "projects" / project / "repo"
-    if (checkout / ".git").exists():
-        # Reused rather than recloned -- these are ClickHouse-sized repositories -- but
-        # one left by an earlier session is behind both the PR and its base branch.
-        print(f"reusing {checkout}")
-        run_step(["git", "fetch", "--prune", "origin"], cwd=checkout, fatal=False)
-    else:
-        checkout.mkdir(parents=True, exist_ok=True)
-        run_step(["gh", "repo", "clone", repo, "."], cwd=checkout)
+    # Reused rather than recloned -- these are ClickHouse-sized repositories -- but one
+    # left by an earlier session is behind both the PR and its base branch.
+    checkout = clone_or_fetch(repo, APP_DIR / "projects" / project / "repo")
     # --force: this checkout is ours and disposable, so matching the PR beats preserving
     # whatever a previous session left on the branch. It does not touch an unclean
     # working tree, which is why the step still only warns.
@@ -381,7 +442,7 @@ def main() -> None:
     # A PR URL brings its own checkout and opening prompt; otherwise the session works
     # in whatever directory it was launched from.
     if pr_url:
-        cwd, prompt = stage_pr(pr_url)
+        cwd, prompt = stage_url(pr_url)
         claude_args.append(prompt)
     else:
         cwd = Path.cwd()
