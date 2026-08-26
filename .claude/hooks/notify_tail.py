@@ -9,9 +9,14 @@ activity, setup hints -- and only its tail is replayed.
 The reader sees them as the console's `systemMessage`; the session is handed the same
 text as `additionalContext`.
 
-Throttled to one print per NOTIFY_INTERVAL, and silent unless the log has grown or the
-picks have changed, so a fast exchange is not padded with lines already read. The stamp
-lives in the project dir: both sources are mounted read-only.
+Throttled to one print per `interval()`, and silent unless the log has grown or the
+picks have changed, so a fast exchange is not padded with lines already read. Silence
+and breakage look identical from the console, so the interval is readable at
+`config/notify-interval` and `0` there prints on every prompt with both gates off --
+then a prompt that says nothing means the hook is not running.
+
+The stamp lives in the project dir and the interval in the config mount; the two
+sources being replayed are read-only.
 """
 
 import json
@@ -25,7 +30,8 @@ CONFIG = Path(os.path.expanduser("~/.config/claude-toolkit"))
 NOTIFY_LOG = CONFIG / "notifications.log"
 PICKS_FILE = CONFIG / "backlog-picks.txt"
 STATE_FILE = CONFIG / "project" / "notify-tail.json"
-NOTIFY_INTERVAL = 60  # seconds between prints
+INTERVAL_FILE = CONFIG / "config" / "notify-interval"
+NOTIFY_INTERVAL = 300  # seconds between prints, when config/notify-interval says nothing
 TAIL_LINES = 12  # each line with a URL costs two rows below, so keep the tail short
 TAIL_BYTES = 8192  # the log is unbounded; read only its end
 
@@ -58,6 +64,21 @@ def rows(line: str, md: bool = False) -> list:
     return [ENTRY + m.group(1), CONT + m.group(2)]
 
 
+def interval() -> int:
+    """Seconds to wait between prints; 0 means every prompt, with the gates off.
+
+    Read per invocation so it can be changed mid-session from inside the container --
+    `echo 0 > ~/.config/claude-toolkit/config/notify-interval` -- which is why that
+    directory is the one toolkit mount the container may write. Anything missing or
+    unparseable is the built-in default rather than an error: this runs on the prompt
+    path, and a typo in a debugging knob must not cost a turn.
+    """
+    try:
+        return max(0, int(INTERVAL_FILE.read_text().strip()))
+    except (OSError, ValueError):
+        return NOTIFY_INTERVAL
+
+
 def tail() -> tuple:
     """(size, last lines) of the notification log; (0, []) if it cannot be read."""
     try:
@@ -75,8 +96,9 @@ def main() -> int:
     except (OSError, ValueError):
         state = {}
 
+    wait = interval()
     now = time.time()
-    if now - state.get("at", 0) < NOTIFY_INTERVAL:
+    if wait and now - state.get("at", 0) < wait:
         return 0
 
     try:
@@ -84,8 +106,10 @@ def main() -> int:
     except OSError:
         picks = ""
     size, lines = tail()
-    grew = size > state.get("size", 0)
-    if not grew and picks == state.get("picks", ""):
+    # != rather than >: a truncated or rotated log is movement too, and > would stay
+    # quiet until the new file grew past the byte count of the old one.
+    fresh = size != state.get("size", 0)
+    if wait and not fresh and picks == state.get("picks", ""):
         return 0
 
     def block(header: str, body: list, md: bool = False) -> str:
@@ -94,7 +118,7 @@ def main() -> int:
     sections = []
     if picks:
         sections.append(block("backlog", picks.splitlines(), md=True))
-    if grew and lines:
+    if lines and (fresh or not wait):
         sections.append(block("monitor — most recent last", lines))
     if not sections:
         return 0

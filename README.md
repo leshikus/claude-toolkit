@@ -99,7 +99,18 @@ that is both prints once, as `oldest + highest`.
 The stream is a log, not a window: nothing tails it and no tab is opened for it. A
 `UserPromptSubmit` hook replays its tail into the session before the model starts on
 the turn — at most once every 5 minutes, and only when a new line has landed since
-the last replay. That is the whole delivery, so a notification is read where you are
+the last replay. Silence and breakage look identical from the console, so the wait is
+readable and writable while the session runs:
+
+```bash
+echo 0  > ~/.config/claude-toolkit/config/notify-interval   # every prompt, gates off
+echo 60 > ~/.config/claude-toolkit/config/notify-interval   # once a minute
+rm        ~/.config/claude-toolkit/config/notify-interval    # back to 5 minutes
+```
+
+`config/` is the one toolkit mount a container may write, so that line works from
+inside the session. At `0` a prompt always answers, which makes silence mean the hook
+is not running rather than that nothing moved. That is the whole delivery, so a notification is read where you are
 already working rather than in a tab you would have to remember to look at.
 
 ## Nothing is reported to somebody who is not there

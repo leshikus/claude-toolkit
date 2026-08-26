@@ -26,6 +26,9 @@ class NotifyTailTest(unittest.TestCase):
         self.hook.NOTIFY_LOG = self.log
         self.hook.PICKS_FILE = self.picks
         self.hook.STATE_FILE = self.state
+        self.interval = app / "config" / "notify-interval"
+        self.interval.parent.mkdir()
+        self.hook.INTERVAL_FILE = self.interval
 
     def run_hook(self) -> str:
         """What the hook shows the reader; "" when it stays quiet."""
@@ -104,6 +107,34 @@ class NotifyTailTest(unittest.TestCase):
     def test_the_date_and_seconds_are_dropped_from_the_stamp(self):
         self.log.write_text("2026-08-25 09:07:42  hint x — y\n")
         self.assertEqual(self.run_hook().splitlines()[1:], ["  09:07  hint x — y"])
+
+    def test_the_override_file_replaces_the_default_interval(self):
+        self.log.write_text("first\n")
+        self.run_hook()
+        self.log.write_text("first\nsecond\n")
+        self.assertEqual(self.run_hook(), "")      # inside the default 300 s
+        self.interval.write_text("1\n")
+        self.state.write_text(self.hook.json.dumps({"at": time.time() - 2, "size": 6}))
+        self.assertIn("second", self.run_hook())
+
+    def test_zero_prints_on_every_prompt_with_the_gates_off(self):
+        """Silence must mean the hook is dead, not that nothing moved."""
+        self.interval.write_text("0")
+        self.log.write_text("first\n")
+        self.assertIn("first", self.run_hook())
+        self.assertIn("first", self.run_hook())    # unchanged, no wait: still speaks
+
+    def test_a_garbled_override_is_the_default_not_an_error(self):
+        self.interval.write_text("every minute please")
+        self.assertEqual(self.hook.interval(), self.hook.NOTIFY_INTERVAL)
+
+    def test_a_shrinking_log_counts_as_movement(self):
+        """Rotation must not mute the hook until the new file passes the old size."""
+        self.log.write_text("a\nb\nc\n")
+        self.run_hook()
+        self.state.write_text(self.hook.json.dumps({"at": 1, "size": 6}))
+        self.log.write_text("d\n")                # truncated: smaller, but new
+        self.assertIn("d", self.run_hook())
 
     def test_stamp_records_the_size_it_printed(self):
         self.log.write_text("first\n")

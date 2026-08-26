@@ -291,6 +291,12 @@ def main() -> None:
     notify_log.touch()
     picks_file = APP_DIR / "backlog-picks.txt"
     picks_file.touch()
+    # The one toolkit mount the container may write: knobs the session changes as it
+    # runs, e.g. notify-interval. A directory, not a file per knob, so `echo >` and
+    # anything that replaces rather than rewrites both work, and the next knob needs
+    # no mount.
+    config_dir = APP_DIR / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
     # Merge, not overwrite: preserve a `pr` claim the monitor (or a prior
     # session_start) recorded, so an open PR stays associated with this project.
     meta_file = proj_dir / "meta.json"
@@ -468,6 +474,7 @@ def main() -> None:
         # The monitor's notification log, replayed into the session by notify_tail.
         "-v", f"{notify_log}:/home/ubuntu/.config/claude-toolkit/notifications.log:ro",
         "-v", f"{picks_file}:/home/ubuntu/.config/claude-toolkit/backlog-picks.txt:ro",
+        "-v", f"{config_dir}:/home/ubuntu/.config/claude-toolkit/config:rw",
         # --review only: every project's dir (meta.json + per-PR checkouts).
         *review_mount,
         # Private copy of the GPG keyring so the container can sign commits without
