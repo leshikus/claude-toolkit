@@ -236,3 +236,35 @@ class StageIssueTest(unittest.TestCase):
         work, _ = claude.stage_url(self.ISSUE)
         self.assertEqual(work, self.app / "projects" / "ClickHouse-issue-92886" / "work")
         self.assertTrue(work.is_dir())
+
+
+class ClaudeJsonTest(unittest.TestCase):
+    """~/.claude.json is mounted rw into every container, so one copy is a race."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(claude, "HOME", self.home).start()
+        (self.home / ".claude.json").write_text(
+            claude.json.dumps({"userID": "u", "oauthAccount": {"a": 1}, "projects": {"/x": {}}}))
+
+    def stage(self, project: str) -> Path:
+        d = self.home / "projects" / project
+        d.mkdir(parents=True)
+        return claude.stage_claude_json(d)
+
+    def test_each_project_gets_its_own_copy(self):
+        a, b = self.stage("one"), self.stage("two")
+        self.assertNotEqual(a, b)
+        self.assertEqual(a.name, "claude.json")
+
+    def test_the_workdir_is_pre_trusted_so_nothing_prompts(self):
+        data = claude.read_json(self.stage("one"))
+        self.assertTrue(data["projects"][claude.WORKDIR]["hasTrustDialogAccepted"])
+
+    def test_a_corrupt_copy_is_reseeded_from_the_host(self):
+        """It is a cache of onboarding answers; re-seeding costs one launch."""
+        d = self.home / "projects" / "one"
+        d.mkdir(parents=True)
+        (d / "claude.json").write_text("")
+        self.assertEqual(claude.read_json(claude.stage_claude_json(d))["userID"], "u")

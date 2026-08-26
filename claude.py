@@ -197,21 +197,24 @@ def stage_credentials():
     return kind, path
 
 
-def stage_claude_json() -> Path:
-    """The container's own ~/.claude.json, with WORKDIR pre-trusted. Returns its path.
+def stage_claude_json(proj_dir: Path) -> Path:
+    """This project's own ~/.claude.json, with WORKDIR pre-trusted. Returns its path.
 
     Onboarding state (theme, per-project trust) lives in ~/.claude.json -- a file in
-    $HOME, not inside ~/.claude. Mounting the host's copy rw used to share it with
-    whatever Claude Code session is running on the host, so two processes
-    read-modify-wrote one 40 KB document at once and it periodically came back
-    truncated. A container then found no trust flag for its workdir and stopped on a
-    prompt with nobody to answer it. This copy is the container's alone.
+    $HOME, not inside ~/.claude. Mounting the host's copy rw shared it with whatever
+    Claude Code session was running on the host, so two processes read-modify-wrote one
+    40 KB document at once and it periodically came back truncated. A container then
+    found no trust flag for its workdir and stopped on a prompt with nobody to answer.
+
+    Per project, not one copy for every container: they all mount it rw and key their
+    only entry on the same fixed WORKDIR, so a single shared copy just moved that race
+    inside. Four containers held one open here and it came back 0 bytes.
 
     Anything unparseable is discarded rather than repaired: the file is a cache of
     onboarding answers, and re-seeding it from the host costs one launch. The trust
     flag is re-asserted every run, so a corrupted file on either side heals by itself.
     """
-    path = APP_DIR / "container-claude.json"
+    path = proj_dir / "claude.json"
     data = read_json(path)
     if not data:  # first run, or the previous file was corrupt
         host = read_json(HOME / ".claude.json")
@@ -517,7 +520,7 @@ def main() -> None:
     # the build context changed, and it picks up Dockerfile edits.
     subprocess.run(["docker", "build", "-t", IMAGE, str(REPO_DIR)], check=True)
 
-    claude_json = stage_claude_json()
+    claude_json = stage_claude_json(proj_dir)
 
     # macOS may keep the Claude Code credential in the login Keychain, which the Linux
     # container cannot reach; on Linux the CLI reads ~/.claude/.credentials.json
@@ -585,6 +588,7 @@ def main() -> None:
 
     settings = {
         "theme": "dark",
+        "outputStyle": "Concise",
         **({} if creds_kind == "oauth" else {"apiKeyHelper": f"cat {container_creds}"}),
         "hooks": {
             "SessionStart": [
