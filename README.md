@@ -23,7 +23,10 @@ python3 -m unittest discover tests   # unit tests
 Given a pull request URL, the launcher does the setup you would otherwise type: syncs
 the repo if it is a fork, clones it under `projects/<repo>-<N>/repo` — the same place the
 monitor puts a per-PR console, so both routes land in one directory — checks the PR
-out, and opens the session there. The directory is named `<repo>-<number>`, because a
+out, and opens the session there. A checkout that is already present is fetched
+rather than recloned — these are ClickHouse-sized repositories — and only the clone is
+fatal: a failed sync, fetch or checkout still leaves something to work in, so the
+session opens and is told what went wrong. The directory is named `<repo>-<number>`, because a
 PR number is unique only inside its repo and `ClickHouse` and `clickhouse-private`
 overlap constantly. What it opens *on* depends on whose PR it is,
 decided by the token's own login: your own starts on what is left to finish it,

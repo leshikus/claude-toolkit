@@ -21,8 +21,9 @@ class StagePrTest(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(claude, "APP_DIR", self.app).start()
         self.ran = []
-        mock.patch.object(claude, "run_or_exit",
-                          side_effect=lambda argv, cwd=None: self.ran.append(argv[:3])).start()
+        mock.patch.object(claude, "run_step",
+                          side_effect=lambda argv, cwd=None, fatal=True:
+                          self.ran.append(argv[:3])).start()
         self.fork, self.author = False, ME
         mock.patch.object(claude, "gh_json", side_effect=self.gh).start()
 
@@ -58,10 +59,23 @@ class StagePrTest(unittest.TestCase):
         claude.stage_pr(URL)
         self.assertEqual(self.ran, [["gh", "repo", "clone"], ["gh", "pr", "checkout"]])
 
-    def test_an_existing_checkout_is_not_recloned(self):
+    def test_an_existing_checkout_is_fetched_rather_than_recloned(self):
+        """These are ClickHouse-sized clones, but a stale one is worse than useless."""
         (self.app / "projects" / "ClickHouse-7" / "repo" / ".git").mkdir(parents=True)
         claude.stage_pr(URL)
-        self.assertEqual(self.ran, [["gh", "pr", "checkout"]])
+        self.assertEqual(self.ran, [["git", "fetch", "--prune"], ["gh", "pr", "checkout"]])
+
+    def test_only_the_clone_is_fatal(self):
+        """A failed sync or checkout still leaves a repository the session can work in."""
+        self.fork = True
+        seen = []
+        with mock.patch.object(claude, "run_step",
+                               side_effect=lambda argv, cwd=None, fatal=True:
+                               seen.append((argv[0], argv[1], fatal))):
+            claude.stage_pr(URL)
+        self.assertEqual(seen, [("gh", "repo", False),        # sync
+                                ("gh", "repo", True),         # clone
+                                ("gh", "pr", False)])         # checkout
 
     def test_a_fork_is_synced_before_it_is_read(self):
         """A stale default branch is what makes the checkout diverge from what CI ran."""

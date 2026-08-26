@@ -260,6 +260,10 @@ def stage_pr(url: str):
     per-PR console, so both routes to a PR land in one directory and `claude.py`
     already reads the project name from it. A fork is synced first: its default
     branch going stale is what makes a local checkout diverge from what CI ran.
+
+    Only the clone is fatal. Without a repository there is nothing to open, while a
+    failed sync, fetch or checkout leaves a usable one, and a session told what went
+    wrong is better placed to sort it out than a launcher that refuses to start.
     """
     m = PR_URL.match(url)
     if not m:
@@ -269,21 +273,29 @@ def stage_pr(url: str):
     # project: a number alone is unique only within a repo.
     project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-{number}")
     if gh_json("repo", "view", repo, "--json", "isFork")["isFork"]:
-        run_or_exit(["gh", "repo", "sync", repo])
+        run_step(["gh", "repo", "sync", repo], fatal=False)
     author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
     checkout = APP_DIR / "projects" / project / "repo"
-    checkout.mkdir(parents=True, exist_ok=True)
-    if not (checkout / ".git").exists():
-        run_or_exit(["gh", "repo", "clone", repo, "."], cwd=checkout)
-    run_or_exit(["gh", "pr", "checkout", number], cwd=checkout)
+    if (checkout / ".git").exists():
+        # Reused rather than recloned -- these are ClickHouse-sized repositories -- but
+        # one left by an earlier session is behind both the PR and its base branch.
+        print(f"reusing {checkout}")
+        run_step(["git", "fetch", "--prune", "origin"], cwd=checkout, fatal=False)
+    else:
+        checkout.mkdir(parents=True, exist_ok=True)
+        run_step(["gh", "repo", "clone", repo, "."], cwd=checkout)
+    run_step(["gh", "pr", "checkout", number], cwd=checkout, fatal=False)
     mine = author == gh_json("api", "user")["login"]
     return checkout, (f"What should we do to finalize {url}?" if mine else f"Review {url}")
 
 
-def run_or_exit(argv: list, cwd=None) -> None:
-    """Run `argv` with its output on our own terminal; exit if it fails."""
+def run_step(argv: list, cwd=None, fatal: bool = True) -> None:
+    """Run `argv` with its output on our own terminal; exit, or warn, if it fails."""
     if subprocess.run(argv, cwd=cwd).returncode:
-        sys.exit(f"error: {' '.join(str(a) for a in argv)} failed")
+        step = " ".join(str(a) for a in argv)
+        if fatal:
+            sys.exit(f"error: {step} failed")
+        print(f"warning: {step} failed -- opening the checkout as it stands", file=sys.stderr)
 
 
 def pull_toolkit() -> None:
