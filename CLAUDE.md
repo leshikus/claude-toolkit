@@ -55,6 +55,10 @@ Stage the paths you touched.
 
 Author is `Alexei Fedotov <alexei.fedotov@gmail.com>`: this is not a ClickHouse project.
 
+This and `leshikus/claude` are leshikus's own toolbox: commit changes directly to
+`main`, skipping pull requests and feature branches. The generic "new branch per task,
+never commit to the default branch" rule does not apply to these repos.
+
 ## Settled, do not retry
 
 A hook's `systemMessage` strips the OSC 8 escape and does not render markdown, so a
