@@ -119,19 +119,25 @@ an inventory of what you already have configured, and saying nothing is the expe
 answer.
 
 A backlog is read newest-first, so what nobody looks at is the least recently touched
-thing in it — and that is rarely what matters most. Every 15 minutes the monitor picks
-both. They are state, not history: the pair overwrites `backlog-picks.txt` rather than
-adding two more lines to the stream every cycle, and it is reprinted whole each time
-the hook speaks.
+thing in it — and that is rarely what matters most, nor what an hour of work would
+finish. Every 15 minutes the monitor picks all three: `oldest`, `highest`, and
+`easiest`, the one closest to done, where an approving review already given is the
+strongest signal. Each line carries the action rather than only the title: every item
+is one that only you can move, so naming it without saying what it needs leaves out the
+point of picking it.
+
+They are state, not history: the picks overwrite `backlog-picks.txt` rather than adding
+three more lines to the stream every cycle, and are reprinted whole each time the hook
+speaks.
 
 ```
 backlog
-  oldest — Make a status for failing ccache
+  oldest — Make a status for failing ccache: nobody picked it up in three years
       https://github.com/ClickHouse/ClickHouse/issues/46502
-  highest — Rework AutoReleases into a praktika workflow
+  highest — Rework AutoReleases into a praktika workflow: the release branch waits on it
       https://github.com/ClickHouse/ClickHouse/issues/85176
-  easiest — Remove unit tests for CI scripts
-      https://github.com/ClickHouse/ClickHouse/pull/114675
+  easiest — Unify columns definition for CI Logs: approved, needs a rebase
+      https://github.com/ClickHouse/ClickHouse/pull/115607
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an
