@@ -50,21 +50,29 @@ class BacklogPicksEventTest(unittest.TestCase):
         self.assertIn("oldest + highest —", out)
         self.assertEqual(len(out.splitlines()), 1)
 
+    def test_an_approved_pick_is_parsed(self):
+        """`approved` is a fact about the PR; `easiest` was a judgment that misfired."""
+        out = self.fire(f"approved: {HOT} — rebase and it can merge")
+        self.assertIn(f"approved — {TITLE}: rebase and it can merge", out)
+
+    def test_easiest_is_no_longer_a_label(self):
+        self.assertEqual(self.fire(f"easiest: {HOT} — anything"), "")
+
     def test_the_newest_pick_is_parsed_and_prints_after_oldest(self):
         """Least and most recently touched are a pair; they read together."""
-        lines = self.fire(f"easiest: {HOT}\nnewest: {HOT}\noldest: {OLD}").splitlines()
+        lines = self.fire(f"approved: {HOT}\nnewest: {HOT}\noldest: {OLD}").splitlines()
         self.assertIn("oldest —", lines[0])
-        self.assertIn("newest + easiest —", lines[1])
+        self.assertIn("newest + approved —", lines[1])
 
     def test_a_pick_carries_the_action_it_needs(self):
         """A title alone says what the item is, not what the user has to do about it."""
-        out = self.fire(f"easiest: {HOT} — approved, needs a rebase")
-        self.assertIn(f"easiest — {TITLE}: approved, needs a rebase", out)
+        out = self.fire(f"highest: {HOT} — two PRs are blocked behind it")
+        self.assertIn(f"highest — {TITLE}: two PRs are blocked behind it", out)
 
-    def test_the_easiest_pick_is_parsed_and_prints_last(self):
-        lines = self.fire(f"easiest: {HOT}\nhighest: {HOT}\noldest: {OLD}").splitlines()
+    def test_a_label_prints_in_the_declared_order_not_the_answer_order(self):
+        lines = self.fire(f"approved: {HOT}\nhighest: {HOT}\noldest: {OLD}").splitlines()
         self.assertIn("oldest —", lines[0])
-        self.assertIn("highest + easiest —", lines[1])
+        self.assertIn("highest + approved —", lines[1])
 
     def test_oldest_prints_before_highest(self):
         lines = self.fire(f"highest: {HOT}\noldest: {OLD}").splitlines()

@@ -5,7 +5,7 @@ Pick two items out of everything waiting on the user, and answer with their URLs
 - **oldest** — the one nothing has happened to for the longest.
 - **newest** — the one something has just happened to.
 - **highest** — the one worth doing first.
-- **easiest** — the one whose action takes the least work.
+- **approved** — a pull request of theirs that already has an approving review.
 
 They are often not the same item, and that contrast is the point: a backlog is read
 newest-first, so the oldest thing in it is the one that never gets looked at, while the
@@ -40,15 +40,14 @@ else answered, and then the ball is with them and it does not belong in this set
 Pick it only when the thing that just happened is what hands it back: a review posted, a
 question asked of them, CI going red on their branch.
 
-**easiest** is the smallest *action*, not the item nearest to merged. Whatever the user
-has to do on it — approve a three-line change, answer one question, rebase, add a
-changelog entry, re-run a job — pick the one that is least work. It does not have to be
-their own pull request: reviewing a tiny diff somebody else wrote is often the easiest
-thing in the whole set.
+**approved** is a fact, not a judgment: a pull request the user authored that carries an
+approving review. Agreement has already been given, so only mechanics stand between it
+and merged — a rebase, a changelog entry, a red job to re-run, or nothing at all. Say
+which in the action clause, because that is the whole of what is left.
 
-Weigh the action, not the item. A one-line change of their own that nobody has reviewed
-needs a reviewer, so it is not easy; a two-hundred-line diff they only have to approve
-may be.
+**Omit this line when there is no such pull request.** It is the one label with an
+objective test, so there is never a reason to stretch it: no approval, no line. If
+several are approved, take the one whose remaining mechanics are smallest.
 
 **highest** is a judgment, so make it on what the item costs and unblocks, not on how
 loud it looks. What is holding up other work, what has someone actively waiting on a
@@ -65,7 +64,7 @@ left out the point of picking it.
 oldest: https://github.com/<owner>/<repo>/issues/1234 — nobody picked it up; close it or find an owner
 newest: https://github.com/<owner>/<repo>/pull/3456 — a reviewer asked a question 20 minutes ago
 highest: https://github.com/<owner>/<repo>/pull/5678 — two PRs are blocked behind it
-easiest: https://github.com/<owner>/<repo>/pull/9012 — approved; needs a rebase and a changelog entry
+approved: https://github.com/<owner>/<repo>/pull/9012 — rebase and it can merge
 ```
 
 Keep the action to a clause. Titles are looked up separately, so do not repeat one.

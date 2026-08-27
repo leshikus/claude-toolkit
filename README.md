@@ -131,8 +131,10 @@ A backlog is read newest-first, so what nobody looks at is the least recently to
 thing in it — and that is rarely what matters most, nor what an hour of work would
 finish, nor what someone replied to ten minutes ago. Every 15 minutes the monitor picks
 all four: `oldest`, `newest` — its mirror, most recent activity rather than least —
-`highest`, and `easiest` — the smallest action, which is often reviewing a tiny diff
-somebody else wrote rather than finishing anything of your own. Each line carries the action rather than only the title: every item
+`highest`, and `approved` — one of your own pull requests that already carries an
+approving review, so only a rebase or a changelog entry stands between it and merged.
+That last one is omitted when nothing qualifies; it is the only label with an objective
+test, so there is never a reason to stretch it. Each line carries the action rather than only the title: every item
 is one that only you can move, so naming it without saying what it needs leaves out the
 point of picking it.
 
@@ -148,7 +150,7 @@ backlog
       https://github.com/<owner>/<repo>/pull/3456
   highest — <pr title>: two pull requests are blocked behind it
       https://github.com/<owner>/<repo>/pull/5678
-  easiest — <pr title>: approve it, three lines and CI is green
+  approved — <pr title>: rebase and it can merge
       https://github.com/<owner>/<repo>/pull/9012
 ```
 

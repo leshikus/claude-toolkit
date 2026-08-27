@@ -127,13 +127,13 @@ ACTIVE_WINDOW = 900  # seconds since the last keypress/mouse move that still cou
 ACTIVE_POLL = 60     # how often a deferred event looks to see whether you came back
 
 # Four picks out of the backlog (job 8 below): what has waited longest, what just moved,
-# what is worth doing first, and what is nearest to done. Both are judgments about your own repositories, role and
+# what is worth doing first, and what is already approved. Any may be absent. Both are judgments about your own repositories, role and
 # priorities, so a headless `claude` makes them.
 PICKS_DOC = REPO_DIR / ".claude" / "modes" / "backlog-picks.md"  # the generic task
 PICKS_STATE_FILE = APP_DIR / "backlog-picks.json"  # last run, so a restart does not re-run
 PICKS_FILE = APP_DIR / "backlog-picks.txt"  # the current picks, rewritten every cycle
 STORE_INTERVAL = 1800  # seconds between fetches of every mirror in the shared git store
-PICKS = ("oldest", "newest", "highest", "easiest")  # the labels, in print order
+PICKS = ("oldest", "newest", "highest", "approved")  # the labels, in print order
 PICKS_INTERVAL = 900          # seconds between selections
 PICKS_RETRY = 900             # ... but a selection that failed must not cost a whole cycle
 PICKS_MODEL = os.environ.get("CLAUDE_PICKS_MODEL", "claude-sonnet-5")
@@ -1657,11 +1657,12 @@ class GitStoreEvent(Event):
 
 
 class BacklogPicksEvent(Event):
-    """Post what has waited longest, what just moved, what matters most, what is nearly done.
+    """Post what has waited longest, what just moved, what matters most, what is approved.
 
     A backlog is read newest-first, so its oldest item is the one nobody looks at --
-    but oldest is not most important, nor the one an hour of work would finish, nor the
-    one somebody replied to ten minutes ago. Printing any one alone is misleading. Both are judgments about your repositories, your role and what
+    but oldest is not most important, nor the one somebody replied to ten minutes ago,
+    nor one already agreed and waiting on a rebase. Printing any one alone is
+    misleading, and a label with nothing to name is simply left out. Both are judgments about your repositories, your role and what
     "actionable" means for you: not something to hard-code here, and not something the
     mechanical action-required set in PullRequestsEvent can express. So the selection
     is delegated to a headless `claude`. Run from the checkout, it loads the same
