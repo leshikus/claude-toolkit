@@ -2,8 +2,9 @@
 """UserPromptSubmit hook: show what the host monitor has to say, before the turn starts.
 
 Two channels, both written by `monitor.py` and invisible from inside the container.
-`backlog-picks.txt` is state -- the pair worth looking at right now, overwritten every
-cycle -- and is reprinted whole. `notifications.log` is history -- CI results, PR
+`backlog-picks.txt` and this project's `hint.md` are state -- what is worth looking at
+right now, and the one capability worth learning for the session in front of you, each
+overwritten every cycle -- and are reprinted whole. `notifications.log` is history -- CI results, PR
 activity, setup hints -- and only its tail is replayed.
 
 The reader sees them as the console's `systemMessage`; the session is handed the same
@@ -29,6 +30,7 @@ from pathlib import Path
 CONFIG = Path(os.path.expanduser("~/.config/claude-toolkit"))
 NOTIFY_LOG = CONFIG / "notifications.log"
 PICKS_FILE = CONFIG / "backlog-picks.txt"
+HINT_FILE = CONFIG / "project" / "hint.md"
 STATE_FILE = CONFIG / "project" / "notify-tail.json"
 INTERVAL_FILE = CONFIG / "config" / "notify-interval"
 NOTIFY_INTERVAL = 300  # seconds between prints, when config/notify-interval says nothing
@@ -77,6 +79,14 @@ def interval() -> int:
         return NOTIFY_INTERVAL
 
 
+def read(path: Path) -> str:
+    """A whole small file, stripped; "" if it is missing."""
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return ""
+
+
 def tail() -> tuple:
     """(size, last lines) of the notification log; (0, []) if it cannot be read."""
     try:
@@ -99,21 +109,22 @@ def main() -> int:
     if wait and now - state.get("at", 0) < wait:
         return 0
 
-    try:
-        picks = PICKS_FILE.read_text().strip()
-    except OSError:
-        picks = ""
+    picks, hint = read(PICKS_FILE), read(HINT_FILE)
     size, lines = tail()
     # != rather than >: a truncated or rotated log is movement too, and > would stay
     # quiet until the new file grew past the byte count of the old one.
     fresh = size != state.get("size", 0)
-    if wait and not fresh and picks == state.get("picks", ""):
+    if wait and not fresh and picks == state.get("picks", "") and hint == state.get("hint", ""):
         return 0
 
     def block(header: str, body: list) -> str:
         return "\n".join([header] + [r for line in body for r in rows(line)])
 
     sections = []
+    if hint:
+        # Printed whole, not through row(): it is prose about this session, not a list
+        # of events, and it carries no URL to lift onto a row of its own.
+        sections.append("try this\n" + "\n".join(ENTRY + l for l in hint.splitlines()))
     if picks:
         sections.append(block("backlog", picks.splitlines()))
     if lines and (fresh or not wait):
@@ -122,7 +133,8 @@ def main() -> int:
         return 0
 
     try:
-        STATE_FILE.write_text(json.dumps({"at": now, "size": size, "picks": picks}) + "\n")
+        STATE_FILE.write_text(
+            json.dumps({"at": now, "size": size, "picks": picks, "hint": hint}) + "\n")
     except OSError as exc:
         print(f"(could not write {STATE_FILE}: {exc})", file=sys.stderr)
 

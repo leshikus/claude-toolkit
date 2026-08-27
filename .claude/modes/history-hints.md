@@ -82,32 +82,57 @@ few thousand tokens in one. Correct output: `NONE`.
 
 ## Output format (strict)
 
-Hints are read inline in a notification stream by someone glancing at a terminal tab
-mid-task.
+A hint is a short tutorial on one Claude Code capability, printed as a section of its
+own to the person running the session. Assume they do not know the capability exists —
+that is usually why the waste happened.
 
-- First line: exactly `NONE` if nothing is worth the reader's attention — then stop.
-- Otherwise **exactly one hint** — your single highest-value one — as a `- ` bullet
-  that **fits one terminal line: 140 characters, hard limit**. You get one line per
-  cycle; spend it on the thing most worth changing, and never pad it out to two.
-- **Lead with the recommendation, then the evidence**: `do X: because Y`. Anything
-  past 140 characters is cut from the end, so the half the reader must not lose goes
-  first. Never open with a description of the session.
-- Name the mechanism concretely. If it is a skill, say what the skill would cover; if
-  a hook, which event; if a permission rule, which command.
-- No preamble, no summary of the session, no closing remarks.
+- First line: exactly `NONE` if nothing is worth their attention — then stop.
+- Otherwise exactly four lines, each at most 100 characters:
 
-Good — recommendation first, and the reader can act on each:
+```
+## <capability> — <what it is for>
+<one line: what it does, in plain terms>
+Try: <the exact thing to type or add, ready to use>
+Here: <what this session did that called for it>
+```
 
-`- Make the patch-release checklist a skill: re-explained across 3 prompts, would load on trigger instead of being retyped.`
+The `Try:` line has to be usable as written — a real command, a real settings key, a
+real file path. "Consider using a skill" teaches nothing.
 
-`- Add a settings.json allow rule for read-only `gh api` GETs: 12 approval prompts for them this session.`
+The `Here:` line is what makes it a hint rather than documentation: name the thing in
+*this* trace it would have fixed, with the number if the statistics give you one.
 
-`- Ask for an Explore subagent on repo-wide searches: this one pulled ~40 files into the main context to answer one question.`
+Teach one capability. Not two, not a list — you get one section per cycle, so spend it
+on the one that would change the most.
 
-Bad — addressed to the agent, or generic model behavior with no setup change behind it:
+Good:
 
-`- 4x identical full-file Read of ci/jobs/release_job.py; grep -n for specific step names instead of re-reading the whole file.`
+```
+## /goal — keep working until a condition holds
+Claude re-checks the condition before it stops, so a long task does not end halfway.
+Try: /goal PR 115607 has green CI and every review comment triaged
+Here: the session stopped three times mid-rebase and you re-prompted it each time.
+```
 
-Bad — evidence first, so the clip destroys the useful half:
+```
+## Background Bash — start a long command and keep working
+A backgrounded command re-invokes Claude when it exits, instead of blocking the turn.
+Try: ask for "run the build in the background" — or set run_in_background on the call
+Here: one turn spent 4619s polling `gh run view` in the foreground.
+```
 
-`- Dry-run CI runs got polled via repeated foreground sleep+gh run view (one turn ran 4619s) before switching to background — default to…`
+Bad — addressed to the agent, and no capability behind it:
+
+```
+## Reading files — read less
+4x identical full-file Read of ci/jobs/release_job.py; grep for the step names instead.
+```
+
+Bad — the `Try:` line is not usable, and `Here:` is missing, so it is documentation
+rather than a hint:
+
+```
+## Skills — package a procedure
+A skill loads only when triggered, so it costs nothing until needed.
+Try: consider making a skill for this
+```

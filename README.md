@@ -99,16 +99,25 @@ which Claude Code capability would make it go better. While a session is activel
 coding — judged by its history still growing — the monitor distills the transcript
 (tool-call counts, calls that repeated verbatim, what failed, turn durations, context
 re-read) and asks a separate model what to change about the setup. Each cycle looks at
-the single most recent session and posts at most one line, so the stream is a slow
-drip you can read at a glance:
+the single most recent session and writes at most one short tutorial on the capability
+that would have helped, into that project's `hint.md`:
 
 ```
-09:44:05  hint cr26.6 — Try `/investigate-ci` and `/patch-release-check` next time: this session manually rebuilt both workflows via dozens of ad-hoc `gh` calls.
-09:44:56  hint no-manual-appr — Try the continue-pr skill to resume PR #67558 across sessions instead of manually git fetch+checkout of the branch.
+try this
+  ## /goal — keep working until a condition holds
+  Claude re-checks the condition before it stops, so a long task does not end halfway.
+  Try: /goal PR 115607 has green CI and every review comment triaged
+  Here: the session stopped three times mid-rebase and you re-prompted it each time.
 ```
 
-The last few hints are replayed to the model each cycle so it never rephrases advice
-you have already been given.
+It reads as a tutorial because the reason for the waste is usually that you did not
+know the capability existed. `Try:` has to be usable as written; `Here:` names the thing
+in this session it would have fixed, which is what separates a hint from documentation.
+
+It goes to the project rather than into the notification stream: it is several lines of
+prose about the session in front of you, and mixing that into a list of one-line events
+buries both. The topics already taught are replayed to the model each cycle, so it never
+teaches the same capability twice.
 
 The waste in the transcript is only the symptom; the hint is the mechanism that
 removes it — a skill you already have but aren't reaching for, a hook, a subagent, a

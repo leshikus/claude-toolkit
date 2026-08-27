@@ -153,8 +153,8 @@ HISTORY_SCAN_INTERVAL = 300   # seconds between transcript scans
 HISTORY_ACTIVE_WINDOW = 600   # a session is "actively coding" if written within this
 HINT_MIN_NEW_BYTES = 20_000   # new transcript bytes needed before hinting a session again
 HINT_MIN_TOOL_CALLS = 10      # skip a window with too little work to say anything about
-HINT_MAX_LINES = 1            # one hint per cycle: the stream stays glanceable
-HINT_MAX_LINE_CHARS = 140     # ... and it must fit one terminal line of that stream
+HINT_MAX_LINES = 5            # a hint is a short tutorial, not a one-line remark
+HINT_MAX_LINE_CHARS = 100     # ... and each of its lines still has to fit a pane
 HINT_STATE_TTL = 6 * 3600     # forget a transcript's mark once it is this stale
 HINT_RECENT_MEMORY = 5        # past hints replayed to the hinter so it does not repeat one
 HISTORY_READS_PER_SCAN = 20   # transcripts read per scan (a skipped one costs only I/O)
@@ -1126,33 +1126,48 @@ def _run_claude(prompt: str, model: str, timeout: int, tools: list = ()):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def _hint_lines(out: str) -> list:
-    """Split hinter output into individual one-line hints, capped for the stream.
+def _hint_text(out: str) -> str:
+    """The hinter's answer as the tutorial it prints, or "" for nothing worth saying.
 
-    The hints are read inline in the notification stream, so each has to survive as a
-    single glanceable line: bullet markers are stripped, a wrapped bullet is folded
-    back into one line, and both the count and the length are enforced here rather
-    than trusted to the model.
+    Kept as lines rather than folded into one: a hint now teaches a capability -- what
+    it does, how to invoke it, and what in this session called for it -- and that does
+    not survive being flattened. The count and each line's length are enforced here
+    rather than trusted to the model.
     """
-    hints = []
+    lines = []
     for raw in out.splitlines():
         s = raw.strip()
-        if not s:
+        if not s or s.upper().startswith("NONE"):
             continue
-        if s.startswith(("- ", "* ")) or re.match(r"^\d+[.)]\s", s):
-            hints.append(re.sub(r"^([-*]|\d+[.)])\s*", "", s))
-        elif hints:
-            hints[-1] += " " + s  # a bullet the model wrapped across lines
-        else:
-            hints.append(s)       # output with no bullet markers at all
-    out_lines = []
-    for h in hints:
-        h = _clip_words(h, HINT_MAX_LINE_CHARS)
-        if h:
-            out_lines.append(h)
-        if len(out_lines) >= HINT_MAX_LINES:
+        lines.append(_clip_words(s, HINT_MAX_LINE_CHARS))
+        if len(lines) >= HINT_MAX_LINES:
             break
-    return out_lines
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def _hint_topic(text: str) -> str:
+    """The capability a tutorial is about: its heading, which is what `recent` stores.
+
+    Remembering the topic rather than the whole tutorial is what stops the hinter
+    teaching the same capability twice in different words.
+    """
+    first = next((l for l in text.splitlines() if l.strip()), "")
+    return first.lstrip("#").strip()
+
+
+def _write_hint(project: str, text: str) -> None:
+    """Put `project`'s current tutorial where its session's hook will replay it.
+
+    Per project and out of the notification log: a tutorial is about the session in
+    front of you, and it is several lines, so mixing it into a stream of one-line
+    events would bury both. Best-effort; a scheduler job must not die on a full disk.
+    """
+    try:
+        d = PROJECTS_DIR / project
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "hint.md").write_text(text)
+    except OSError:
+        pass
 
 
 class HistoryHintsEvent(Event):
@@ -1293,8 +1308,10 @@ class HistoryHintsEvent(Event):
                 "prompt text unless the agent hits it often and gets it wrong often, "
                 "since prompt text is paid on every future session. First line exactly "
                 "NONE if nothing is worth the reader's attention (the common answer); "
-                "otherwise exactly one hint, a single `- ` bullet fitting one "
-                "140-character terminal line, recommendation first: `do X: because Y`."
+                "otherwise a four-line tutorial on one capability, at most 100 "
+                "characters a line: `## <capability> - <what it is for>`, what it does, "
+                "`Try: <the exact thing to type>`, `Here: <what this session did that "
+                "called for it>`."
             )
         project = _history_project(session_start, cwd, path)
         already = ""
@@ -1316,13 +1333,11 @@ class HistoryHintsEvent(Event):
         if out is None:
             print(f"monitor: hinter unavailable for {path.name}", file=sys.stderr)
             return None
-        first = next((ln.strip() for ln in out.splitlines() if ln.strip()), "")
-        if first.upper().startswith("NONE"):
+        text = _hint_text(out)
+        if not text:
             return []  # ran, found nothing worth saying: the cycle is spent
-        hints = _hint_lines(out)
-        for hint in hints:
-            _notify(f"hint {project}", hint)
-        return hints
+        _write_hint(project, text)
+        return [_hint_topic(text)]
 
 
 # ---- Job 6: a clickable link to the PR a session just started on ------------

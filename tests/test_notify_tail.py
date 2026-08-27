@@ -26,6 +26,8 @@ class NotifyTailTest(unittest.TestCase):
         self.hook.NOTIFY_LOG = self.log
         self.hook.PICKS_FILE = self.picks
         self.hook.STATE_FILE = self.state
+        self.hint = app / "project" / "hint.md"
+        self.hook.HINT_FILE = self.hint
         self.interval = app / "config" / "notify-interval"
         self.interval.parent.mkdir()
         self.hook.INTERVAL_FILE = self.interval
@@ -66,6 +68,22 @@ class NotifyTailTest(unittest.TestCase):
         self.log.write_text("".join(f"line {i}\n" for i in range(100)))
         printed = [r.strip() for r in self.run_hook().splitlines()[1:]]
         self.assertEqual(printed, [f"line {i}" for i in range(100 - self.hook.TAIL_LINES, 100)])
+
+    def test_the_tutorial_prints_as_its_own_section_keeping_its_lines(self):
+        """It is prose about this session, not a list of events to fold into rows."""
+        self.hint.write_text("## /goal — keep going\nwhat it does\nTry: /goal x\nHere: y\n")
+        out = self.run_hook()
+        self.assertEqual(out.splitlines()[:3],
+                         ["try this", "  ## /goal — keep going", "  what it does"])
+
+    def test_a_new_tutorial_speaks_even_though_nothing_else_moved(self):
+        self.log.write_text("first\n")
+        self.run_hook()
+        self.state.write_text(self.hook.json.dumps(
+            {"at": 1, "size": 6, "picks": "", "hint": ""}))
+        self.assertEqual(self.run_hook(), "")
+        self.hint.write_text("## /goal — keep going\n")
+        self.assertIn("## /goal", self.run_hook())
 
     def test_the_picks_print_as_their_own_section(self):
         self.picks.write_text("oldest — A (https://x/1)\nhighest — B (https://x/2)\n")
