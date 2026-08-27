@@ -50,6 +50,12 @@ class BacklogPicksEventTest(unittest.TestCase):
         self.assertIn("oldest + highest —", out)
         self.assertEqual(len(out.splitlines()), 1)
 
+    def test_the_newest_pick_is_parsed_and_prints_after_oldest(self):
+        """Least and most recently touched are a pair; they read together."""
+        lines = self.fire(f"easiest: {HOT}\nnewest: {HOT}\noldest: {OLD}").splitlines()
+        self.assertIn("oldest —", lines[0])
+        self.assertIn("newest + easiest —", lines[1])
+
     def test_a_pick_carries_the_action_it_needs(self):
         """A title alone says what the item is, not what the user has to do about it."""
         out = self.fire(f"easiest: {HOT} — approved, needs a rebase")

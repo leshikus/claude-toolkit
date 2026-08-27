@@ -129,9 +129,10 @@ answer.
 
 A backlog is read newest-first, so what nobody looks at is the least recently touched
 thing in it — and that is rarely what matters most, nor what an hour of work would
-finish. Every 15 minutes the monitor picks all three: `oldest`, `highest`, and
-`easiest`, the one closest to done, where an approving review already given is the
-strongest signal. Each line carries the action rather than only the title: every item
+finish, nor what someone replied to ten minutes ago. Every 15 minutes the monitor picks
+all four: `oldest`, `newest` — its mirror, most recent activity rather than least —
+`highest`, and `easiest`, the one closest to done, where an approving review already
+given is the strongest signal. Each line carries the action rather than only the title: every item
 is one that only you can move, so naming it without saying what it needs leaves out the
 point of picking it.
 
@@ -143,6 +144,8 @@ speaks.
 backlog
   oldest — Make a status for failing ccache: nobody picked it up in three years
       https://github.com/ClickHouse/ClickHouse/issues/46502
+  newest — check_public_build: a reviewer asked a question 20 minutes ago
+      https://github.com/ClickHouse/clickhouse-private/pull/68391
   highest — Rework AutoReleases into a praktika workflow: the release branch waits on it
       https://github.com/ClickHouse/ClickHouse/issues/85176
   easiest — Unify columns definition for CI Logs: approved, needs a rebase

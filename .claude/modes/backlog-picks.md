@@ -3,6 +3,7 @@
 Pick two items out of everything waiting on the user, and answer with their URLs:
 
 - **oldest** — the one nothing has happened to for the longest.
+- **newest** — the one something has just happened to.
 - **highest** — the one worth doing first.
 - **easiest** — the one closest to done.
 
@@ -33,6 +34,12 @@ opened; the one to surface is the one nothing has happened to — no comment, no
 no push, no label — for the longest. Creation date picks the same ancient issue every
 cycle no matter who touched it yesterday, which is the opposite of neglect.
 
+**newest** is the mirror of oldest: most recent activity rather than least. It has to
+still be waiting on the user, which is the trap — an item usually moves *because* someone
+else answered, and then the ball is with them and it does not belong in this set at all.
+Pick it only when the thing that just happened is what hands it back: a review posted, a
+question asked of them, CI going red on their branch.
+
 **easiest** is the one that needs the least to finish, and an approving review is the
 strongest signal there is: an approved pull request waiting on a rebase, a changelog
 entry, or a green re-run is minutes of work holding up something already agreed. Weigh
@@ -52,6 +59,7 @@ left out the point of picking it.
 
 ```
 oldest: https://github.com/<owner>/<repo>/issues/1234 — nobody picked it up; close it or find an owner
+newest: https://github.com/<owner>/<repo>/pull/3456 — a reviewer asked a question 20 minutes ago
 highest: https://github.com/<owner>/<repo>/pull/5678 — two PRs are blocked behind it
 easiest: https://github.com/<owner>/<repo>/pull/9012 — approved; needs a rebase and a changelog entry
 ```
