@@ -589,16 +589,18 @@ def _api_title(api_path: str) -> str:
     return _clip(text.strip(), PR_TITLE_CHARS)
 
 
-def _item_link(url: str) -> str:
-    """A GitHub item as an OSC 8 hyperlink over its title, resolved here via `gh`.
+def _item_link(url: str, action: str = "") -> str:
+    """A GitHub item as a link over `<title>: <action>`, the title resolved via `gh`.
 
-    Only the URL is taken from the model; the title is read from GitHub, so the link
-    text cannot drift from the item it points at. The bare URL when the title is
+    The title is read from GitHub so it cannot drift from the item it points at; only
+    the URL and the action come from the model, and the action is the half a title
+    cannot supply -- what the reader has to do about it. The bare URL when the title is
     unreadable -- a link with no text is not clickable.
     """
     m = _ITEM_RE.search(url)
     title = _api_title(f"/repos/{m.group(1)}/issues/{m.group(2)}") if m else ""
-    return Hyperlink.plain(title, url) if title else url
+    text = f"{title}: {action}" if title and action else title or action
+    return Hyperlink.plain(text, url) if text else url
 
 
 def _pr_change_text(pr: dict, notes: list) -> str:
@@ -1575,16 +1577,24 @@ def _picks(out: str) -> dict:
 
     Labels are ordered by PICKS, not by where they appeared in the answer, so the same
     picks read the same however the selector happened to order its lines.
+
+    Whatever follows the URL is the action: every item here is one the user has to move,
+    so a line that only names it leaves out the point.
     """
-    found = {}
+    found, actions = {}, {}
     for line in out.splitlines():
         label, _, rest = line.partition(":")
         if label.strip().lower() not in PICKS:
             continue
         url = next(iter(_URL_RE.findall(rest)), "")
-        if _ITEM_RE.search(url):
-            found.setdefault(url, []).append(label.strip().lower())
-    return {url: sorted(labels, key=PICKS.index) for url, labels in found.items()}
+        if not _ITEM_RE.search(url):
+            continue
+        found.setdefault(url, []).append(label.strip().lower())
+        action = rest.split(url, 1)[-1].strip().lstrip("-—:").strip()
+        if action:
+            actions.setdefault(url, action)
+    return {url: (sorted(labels, key=PICKS.index), actions.get(url, ""))
+            for url, labels in found.items()}
 
 
 def _tracked_repos() -> list:
@@ -1696,8 +1706,9 @@ class BacklogPicksEvent(Event):
                           f"retrying in {PICKS_RETRY // 60} min"])
             return
         picks = _picks(out)
-        _write_picks([f"{' + '.join(picks[url])} — {_item_link(url)}"
-                      for url in sorted(picks, key=lambda u: PICKS.index(picks[u][0]))])
+        _write_picks([f"{' + '.join(labels)} — {_item_link(url, action)}"
+                      for url, (labels, action) in
+                      sorted(picks.items(), key=lambda kv: PICKS.index(kv[1][0][0]))])
 
 
 def main() -> int:

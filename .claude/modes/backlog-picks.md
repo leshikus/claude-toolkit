@@ -46,14 +46,18 @@ again. A long queue behind an item beats age; age alone belongs on the other lin
 
 ## Answer
 
-One line per label, each a label and a URL, nothing else:
+One line per label: the label, the URL, then what the user has to do about it. Every
+item here is one only they can move, so a line naming the item and not the action has
+left out the point of picking it.
 
 ```
-oldest: https://github.com/<owner>/<repo>/issues/1234
-highest: https://github.com/<owner>/<repo>/pull/5678
-easiest: https://github.com/<owner>/<repo>/pull/9012
+oldest: https://github.com/<owner>/<repo>/issues/1234 — nobody picked it up; close it or find an owner
+highest: https://github.com/<owner>/<repo>/pull/5678 — two PRs are blocked behind it
+easiest: https://github.com/<owner>/<repo>/pull/9012 — approved; needs a rebase and a changelog entry
 ```
 
-No prose, no titles, no explanation, no markdown links — titles are looked up
-separately, and anything else in the output is discarded. Omit a line you cannot fill,
+Keep the action to a clause. Titles are looked up separately, so do not repeat one.
+
+No prose beyond that clause, no titles, no markdown links — anything else in the output
+is discarded. Omit a line you cannot fill,
 and output nothing at all if nothing is waiting on the user.
