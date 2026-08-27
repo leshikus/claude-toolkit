@@ -50,6 +50,11 @@ class BacklogPicksEventTest(unittest.TestCase):
         self.assertIn("oldest + highest —", out)
         self.assertEqual(len(out.splitlines()), 1)
 
+    def test_the_easiest_pick_is_parsed_and_prints_last(self):
+        lines = self.fire(f"easiest: {HOT}\nhighest: {HOT}\noldest: {OLD}").splitlines()
+        self.assertIn("oldest —", lines[0])
+        self.assertIn("highest + easiest —", lines[1])
+
     def test_oldest_prints_before_highest(self):
         lines = self.fire(f"highest: {HOT}\noldest: {OLD}").splitlines()
         self.assertIn("oldest —", lines[0])

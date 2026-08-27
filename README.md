@@ -130,6 +130,8 @@ backlog
       https://github.com/ClickHouse/ClickHouse/issues/46502
   highest — Rework AutoReleases into a praktika workflow
       https://github.com/ClickHouse/ClickHouse/issues/85176
+  easiest — Remove unit tests for CI scripts
+      https://github.com/ClickHouse/ClickHouse/pull/114675
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an

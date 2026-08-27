@@ -126,14 +126,14 @@ NOTIFY_LOG = APP_DIR / "notifications.log"  # every notification; replayed by no
 ACTIVE_WINDOW = 900  # seconds since the last keypress/mouse move that still counts as here
 ACTIVE_POLL = 60     # how often a deferred event looks to see whether you came back
 
-# Two picks out of the backlog (job 8 below): what has waited longest, and what is
-# worth doing first. Both are judgments about your own repositories, role and
+# Three picks out of the backlog (job 8 below): what has waited longest, what is worth
+# doing first, and what is nearest to done. Both are judgments about your own repositories, role and
 # priorities, so a headless `claude` makes them.
 PICKS_DOC = REPO_DIR / ".claude" / "modes" / "backlog-picks.md"  # the generic task
 PICKS_STATE_FILE = APP_DIR / "backlog-picks.json"  # last run, so a restart does not re-run
-PICKS_FILE = APP_DIR / "backlog-picks.txt"  # the current pair, rewritten every cycle
+PICKS_FILE = APP_DIR / "backlog-picks.txt"  # the current picks, rewritten every cycle
 STORE_INTERVAL = 1800  # seconds between fetches of every mirror in the shared git store
-PICKS = ("oldest", "highest")  # the labels it answers with, and the order they print in
+PICKS = ("oldest", "highest", "easiest")  # the labels it answers with, in print order
 PICKS_INTERVAL = 900          # seconds between selections
 PICKS_RETRY = 900             # ... but a selection that failed must not cost a whole cycle
 PICKS_MODEL = os.environ.get("CLAUDE_PICKS_MODEL", "claude-sonnet-5")
@@ -462,8 +462,8 @@ def _notify(title: str, message: str) -> None:
 def _write_picks(lines: list) -> None:
     """Replace the picks file with `lines`.
 
-    The pair is state, not history: re-posting it every cycle filled the stream with
-    the same two items, so what is current overwrites what was. Best-effort; the
+    The picks are state, not history: re-posting them every cycle filled the stream
+    with the same items, so what is current overwrites what was. Best-effort; the
     caller is a scheduler job that must not die on a full disk.
     """
     try:
@@ -1569,9 +1569,12 @@ class GithubLinksEvent(Event):
 def _picks(out: str) -> dict:
     """The selector's `<label>: <url>` lines, as url -> the labels that chose it.
 
-    Keyed by URL rather than by label so one item picked twice prints one line saying
-    it is both, instead of the same title twice. A label whose line names no item is
-    simply absent -- the selector is told to omit what it cannot fill.
+    Keyed by URL rather than by label so one item picked several times prints one line
+    saying it is all of them, instead of the same title again. A label whose line names
+    no item is simply absent -- the selector is told to omit what it cannot fill.
+
+    Labels are ordered by PICKS, not by where they appeared in the answer, so the same
+    picks read the same however the selector happened to order its lines.
     """
     found = {}
     for line in out.splitlines():
@@ -1581,7 +1584,7 @@ def _picks(out: str) -> dict:
         url = next(iter(_URL_RE.findall(rest)), "")
         if _ITEM_RE.search(url):
             found.setdefault(url, []).append(label.strip().lower())
-    return found
+    return {url: sorted(labels, key=PICKS.index) for url, labels in found.items()}
 
 
 def _tracked_repos() -> list:
@@ -1629,11 +1632,11 @@ class GitStoreEvent(Event):
 
 
 class BacklogPicksEvent(Event):
-    """Post what has waited on you longest, and what is worth doing first.
+    """Post what has waited on you longest, what matters most, and what is nearly done.
 
     A backlog is read newest-first, so its oldest item is the one nobody looks at --
-    but oldest is not most important, and printing only one of the two is misleading
-    either way. Both are judgments about your repositories, your role and what
+    but oldest is not most important, and neither is the one an hour of work would
+    finish. Printing any one of the three alone is misleading. Both are judgments about your repositories, your role and what
     "actionable" means for you: not something to hard-code here, and not something the
     mechanical action-required set in PullRequestsEvent can express. So the selection
     is delegated to a headless `claude`. Run from the checkout, it loads the same
