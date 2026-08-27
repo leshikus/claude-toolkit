@@ -131,8 +131,8 @@ A backlog is read newest-first, so what nobody looks at is the least recently to
 thing in it — and that is rarely what matters most, nor what an hour of work would
 finish, nor what someone replied to ten minutes ago. Every 15 minutes the monitor picks
 all four: `oldest`, `newest` — its mirror, most recent activity rather than least —
-`highest`, and `easiest`, the one closest to done, where an approving review already
-given is the strongest signal. Each line carries the action rather than only the title: every item
+`highest`, and `easiest` — the smallest action, which is often reviewing a tiny diff
+somebody else wrote rather than finishing anything of your own. Each line carries the action rather than only the title: every item
 is one that only you can move, so naming it without saying what it needs leaves out the
 point of picking it.
 
@@ -142,14 +142,14 @@ speaks.
 
 ```
 backlog
-  oldest — Make a status for failing ccache: nobody picked it up in three years
-      https://github.com/ClickHouse/ClickHouse/issues/46502
-  newest — check_public_build: a reviewer asked a question 20 minutes ago
-      https://github.com/ClickHouse/clickhouse-private/pull/68391
-  highest — Rework AutoReleases into a praktika workflow: the release branch waits on it
-      https://github.com/ClickHouse/ClickHouse/issues/85176
-  easiest — Unify columns definition for CI Logs: approved, needs a rebase
-      https://github.com/ClickHouse/ClickHouse/pull/115607
+  oldest — <issue title>: nobody picked it up in three years
+      https://github.com/<owner>/<repo>/issues/1234
+  newest — <pr title>: a reviewer asked a question 20 minutes ago
+      https://github.com/<owner>/<repo>/pull/3456
+  highest — <pr title>: two pull requests are blocked behind it
+      https://github.com/<owner>/<repo>/pull/5678
+  easiest — <pr title>: approve it, three lines and CI is green
+      https://github.com/<owner>/<repo>/pull/9012
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an

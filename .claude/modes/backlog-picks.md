@@ -5,7 +5,7 @@ Pick two items out of everything waiting on the user, and answer with their URLs
 - **oldest** — the one nothing has happened to for the longest.
 - **newest** — the one something has just happened to.
 - **highest** — the one worth doing first.
-- **easiest** — the one closest to done.
+- **easiest** — the one whose action takes the least work.
 
 They are often not the same item, and that contrast is the point: a backlog is read
 newest-first, so the oldest thing in it is the one that never gets looked at, while the
@@ -40,11 +40,15 @@ else answered, and then the ball is with them and it does not belong in this set
 Pick it only when the thing that just happened is what hands it back: a review posted, a
 question asked of them, CI going red on their branch.
 
-**easiest** is the one that needs the least to finish, and an approving review is the
-strongest signal there is: an approved pull request waiting on a rebase, a changelog
-entry, or a green re-run is minutes of work holding up something already agreed. Weigh
-what is left rather than the size of the diff — a one-line change nobody has reviewed is
-not close to done.
+**easiest** is the smallest *action*, not the item nearest to merged. Whatever the user
+has to do on it — approve a three-line change, answer one question, rebase, add a
+changelog entry, re-run a job — pick the one that is least work. It does not have to be
+their own pull request: reviewing a tiny diff somebody else wrote is often the easiest
+thing in the whole set.
+
+Weigh the action, not the item. A one-line change of their own that nobody has reviewed
+needs a reviewer, so it is not easy; a two-hundred-line diff they only have to approve
+may be.
 
 **highest** is a judgment, so make it on what the item costs and unblocks, not on how
 loud it looks. What is holding up other work, what has someone actively waiting on a
