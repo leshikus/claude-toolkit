@@ -192,6 +192,17 @@ the monitor assumes you are here — a broken probe must not look like a quiet b
 jobs that serve a working agent rather than a reader (the CI watch feeding results back
 into a session) are never gated.
 
+## Keeping the engine under a session
+
+A session is a `docker run` attached to the daemon, so when Docker Desktop stops the
+client reports `error waiting for container: EOF`, `--rm` deletes the container, and
+`AutoStart = False` means nothing returns. That is how a night's work disappears.
+
+The monitor holds a `caffeinate` sleep assertion while any toolkit container is running,
+and restarts the engine if it becomes unreachable after having seen one — only after,
+so it never fights someone who quit Docker deliberately. Neither is gated on you being
+at the keyboard: overnight is when this happens.
+
 ## How the safety works
 
 - **Auto mode** (`--permission-mode auto`): no routine prompts, but a classifier

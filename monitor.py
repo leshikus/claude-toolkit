@@ -133,6 +133,11 @@ PICKS_DOC = REPO_DIR / ".claude" / "modes" / "backlog-picks.md"  # the generic t
 PICKS_STATE_FILE = APP_DIR / "backlog-picks.json"  # last run, so a restart does not re-run
 PICKS_FILE = APP_DIR / "backlog-picks.txt"  # the current picks, rewritten every cycle
 STORE_INTERVAL = 1800  # seconds between fetches of every mirror in the shared git store
+
+# A session lives in a container attached to `docker run`, so the daemon going away ends
+# it with "error waiting for container: EOF" -- and --rm then deletes the container.
+DOCKER_POLL = 60                # seconds between checks of the engine
+CONTAINER_PREFIX = "toolkit-"   # claude.py names every container this way
 PICKS = ("oldest", "newest", "highest", "approved")  # the labels, in print order
 PICKS_INTERVAL = 900          # seconds between selections
 PICKS_RETRY = 900             # ... but a selection that failed must not cost a whole cycle
@@ -1626,6 +1631,68 @@ def _tracked_repos() -> list:
     return list(seen)
 
 
+class DockerWatchEvent(Event):
+    """Keep the engine up under a live session, and keep the host awake under one.
+
+    A session is a `docker run` attached to the daemon. When Docker Desktop stops, the
+    client gets `error waiting for container: EOF`, --rm deletes the container, and
+    AutoStart=False means nothing comes back -- which is how a night's work disappears.
+
+    Two defences, because the cause is not ours to fix. `caffeinate` while a container
+    is running: this host enters Maintenance Sleep every fifteen minutes, and a bind
+    mount that goes stale under a sleeping host is what produces `gpg: signing failed:
+    Input/output error` on a keyring that is still perfectly intact on disk. And a
+    restart of the engine, but only after having seen a container -- otherwise the
+    monitor would fight someone who quit Docker deliberately.
+
+    Never gated on you being at the keyboard: overnight is when this happens.
+    """
+
+    priority = 10
+
+    def __init__(self, scheduler: sched.scheduler) -> None:
+        super().__init__(scheduler)
+        self.awake = None       # the caffeinate process holding a sleep assertion
+        self.had_container = False
+
+    def fire(self) -> None:
+        try:
+            self._check()
+        except Exception as exc:  # keep the loop alive across transient failures
+            print(f"monitor: docker watch failed: {exc}", file=sys.stderr)
+        self.arm(DOCKER_POLL)
+
+    def _check(self) -> None:
+        running = _toolkit_containers()
+        if running is None:
+            if self.had_container:
+                self.had_container = False
+                _notify("docker", "engine unreachable; starting it")
+                _run_git(["docker", "desktop", "start"])
+            self._hold_awake(False)
+            return
+        self.had_container = self.had_container or bool(running)
+        self._hold_awake(bool(running))
+
+    def _hold_awake(self, want: bool) -> None:
+        """Hold or release a sleep assertion, matched to whether a session is running."""
+        if want and self.awake is None:
+            self.awake = subprocess.Popen(
+                ["caffeinate", "-s"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif not want and self.awake is not None:
+            self.awake.terminate()
+            self.awake = None
+
+
+def _toolkit_containers() -> list:
+    """Names of running toolkit containers, or None when the daemon cannot be reached."""
+    r = subprocess.run(["docker", "ps", "--format", "{{.Names}}"],
+                       capture_output=True, text=True)
+    if r.returncode:
+        return None
+    return [n for n in r.stdout.split() if n.startswith(CONTAINER_PREFIX)]
+
+
 class GitStoreEvent(Event):
     """Keep a bare mirror of every tracked repo, for per-PR checkouts to borrow from.
 
@@ -1739,6 +1806,7 @@ def main() -> int:
         GithubLinksEvent(scheduler).arm(0)     # links mentioned in a chat -> clickable links
         BacklogPicksEvent(scheduler).arm(0)    # longest-waiting + do-this-first -> clickable links
         GitStoreEvent(scheduler).arm(0)        # bare mirrors for per-PR checkouts to borrow
+        DockerWatchEvent(scheduler).arm(0)     # keep the engine up and the host awake
         # Recurring events re-arm themselves, so the queue never empties and run()
         # blocks forever -- until the process is killed.
         scheduler.run()
