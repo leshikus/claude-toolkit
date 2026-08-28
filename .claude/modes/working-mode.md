@@ -15,6 +15,21 @@ Never amend or force-push a commit that has already been pushed. Get each commit
 right *before* you push it — a broken change that reaches the PR turns into a long
 back-and-forth with a reviewer bot, which is exactly what we are avoiding.
 
+Every commit must be GPG-signed (`commit.gpgsign=true`). Never pass `--no-gpg-sign`
+(nor otherwise disable signing) to work around a signing hang or failure — an
+unsigned commit is not acceptable.
+
+Signing here is blocked by the container's mount layout, not transient state, so a
+restart does not fix it: `~/.gnupg` and `~/.gitconfig` are host-shared **virtiofs**
+mounts. GnuPG 2.4 needs `gpg-agent`/`keyboxd` UNIX-domain sockets under
+`$GNUPGHOME`, but virtiofs cannot host working sockets and `/run/user/$UID` (gpg's
+fallback socket dir) is absent, so `keyboxd` cannot start and every `gpg` call
+hangs/errors; `~/.gitconfig` is read-only, so `git config --global` fails with
+"Device or resource busy". The secret keys exist under `~/.gnupg/private-keys-v1.d`.
+If `git commit` cannot sign, treat it as an environment bug and surface it to the
+user (the container needs a signing-capable `GNUPGHOME` on a real fs, or
+`/run/user/$UID` present) — do not bypass signing, and do not assume a restart helps.
+
 ## The pre-push review gate
 
 Before a `git push` completes, a `PreToolUse` hook runs a **separate reviewer agent

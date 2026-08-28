@@ -88,8 +88,8 @@ def real_gh_config() -> str:
     return str(dest)
 
 
-def stage_gnupg() -> str:
-    """Refresh the host GPG keyring copy in place and return its path.
+def stage_gnupg(proj_dir: Path) -> str:
+    """Refresh this project's GPG keyring copy in place and return its path.
 
     gpg needs a writable GNUPGHOME even to read the keyring (it writes a lockfile
     and trustdb), so a read-only mount cannot sign. Mounting a copy (rw) instead
@@ -103,9 +103,15 @@ def stage_gnupg() -> str:
     Overwriting files under the same dir keeps the inode, so live mounts survive.
     Sockets/locks are skipped -- uncopyable, and a concurrent session's live agent
     socket must not be clobbered.
+
+    Per project, not one copy for every container. A single keyring mounted rw into
+    several of them puts their keyboxd daemons on one lock and one socket, and the
+    transcripts show what that costs: `database_open ... waiting for lock (held by
+    <pid>)`, `failed to start keyboxd`, `No Keybox daemon running`. gpg needs this
+    directory to itself.
     """
     src = HOME / ".gnupg"
-    dest = APP_DIR / "gnupg"
+    dest = proj_dir / "gnupg"
     dest.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
         shutil.copytree(
@@ -641,7 +647,7 @@ def main() -> None:
         ["-v", f"{projects_dir}:/home/ubuntu/.config/claude-toolkit/projects:rw"]
         if review_mode else []
     )
-    gnupg_copy = stage_gnupg()
+    gnupg_copy = stage_gnupg(proj_dir)
     docker_args = [
         "docker", "run", "--rm", "--name", container, *tty_flags,
         "-e", "HOME=/home/ubuntu",

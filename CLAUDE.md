@@ -29,10 +29,12 @@ Code both need goes in a module of its own; `term.py` and `gitstore.py` are that
 
 ## Per-container state
 
-Anything mounted read-write into more than one container is a read-modify-write race.
-`~/.claude.json` and the OAuth credential each cost an outage that way, the second time
-after being "fixed" by moving one shared copy inside. Stage per project, under
-`projects/<name>/`.
+Anything mounted read-write into more than one container is a race. `~/.claude.json`
+and the OAuth credential each cost an outage that way, the second time after being
+"fixed" by moving one shared copy inside, and the GPG keyring made every container's
+`keyboxd` contend for one lock and one socket. Stage per project, under
+`projects/<name>/`. Three instances of the same bug: assume the next shared file is one
+too.
 
 ## The shared git store
 

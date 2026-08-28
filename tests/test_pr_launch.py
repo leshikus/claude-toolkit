@@ -248,6 +248,11 @@ class ClaudeJsonTest(unittest.TestCase):
         (self.home / ".claude.json").write_text(
             claude.json.dumps({"userID": "u", "oauthAccount": {"a": 1}, "projects": {"/x": {}}}))
 
+    def stage_gnupg(self, project: str) -> str:
+        d = self.home / "projects" / project
+        d.mkdir(parents=True, exist_ok=True)
+        return claude.stage_gnupg(d)
+
     def stage(self, project: str) -> Path:
         d = self.home / "projects" / project
         d.mkdir(parents=True)
@@ -261,6 +266,17 @@ class ClaudeJsonTest(unittest.TestCase):
     def test_the_workdir_is_pre_trusted_so_nothing_prompts(self):
         data = claude.read_json(self.stage("one"))
         self.assertTrue(data["projects"][claude.WORKDIR]["hasTrustDialogAccepted"])
+
+    def test_each_project_gets_its_own_keyring(self):
+        """One keyring mounted rw into four containers makes their keyboxd fight
+        over one lock and one socket: `No Keybox daemon running`, then EIO."""
+        (self.home / ".gnupg").mkdir()
+        (self.home / ".gnupg" / "pubring.kbx").write_text("keys")
+        a = self.stage_gnupg("one")
+        b = self.stage_gnupg("two")
+        self.assertNotEqual(a, b)
+        self.assertEqual(Path(a).name, "gnupg")
+        self.assertTrue((Path(a) / "pubring.kbx").exists())
 
     def test_a_corrupt_copy_is_reseeded_from_the_host(self):
         """It is a cache of onboarding answers; re-seeding costs one launch."""
