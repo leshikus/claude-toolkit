@@ -68,8 +68,8 @@ def refresh(repo: str) -> str:
             return "busy"
         if (path / "objects").is_dir():
             return "fetched" if _run(
-                ["git", "-C", str(path), "fetch", "--prune", "--quiet"]) else ""
-        if not _run(["gh", "repo", "clone", repo, str(path), "--", "--mirror", "--quiet"]):
+                ["git", "-C", str(path), "fetch", "--prune"]) else ""
+        if not _run(["gh", "repo", "clone", repo, str(path), "--", "--mirror"]):
             return ""
         # A borrower keeps no objects of its own, so anything pruned here is lost to it.
         _run(["git", "-C", str(path), "config", "gc.auto", "0"])
@@ -83,8 +83,13 @@ def reference(repo: str) -> list:
 
 
 def _run(argv: list) -> bool:
-    """Run `argv`, returning whether it succeeded and reporting what it said if not."""
-    r = subprocess.run(argv, capture_output=True, text=True)
-    if r.returncode:
-        print(f"git-store: {' '.join(argv)}: {r.stderr.strip()[:200]}", file=sys.stderr)
-    return r.returncode == 0
+    """Run `argv` on our own terminal, returning whether it succeeded.
+
+    Not captured: fetching a ClickHouse-sized mirror is a minute of silence otherwise,
+    and git writes its progress counter only when stderr is a tty -- so a launch shows
+    it and the monitor, whose stderr is its log, still gets none of it.
+    """
+    if subprocess.run(argv).returncode:
+        print(f"git-store: {' '.join(argv)} failed", file=sys.stderr)
+        return False
+    return True

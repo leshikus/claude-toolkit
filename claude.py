@@ -321,6 +321,7 @@ def clone_or_fetch(repo: str, checkout: Path) -> Path:
     transfers every new object into its own store, and the sharing stops paying after
     the first clone.
     """
+    print(f"refreshing the mirror of {repo} in {gitstore.mirror(repo)}")
     gitstore.refresh(repo)
     if (checkout / ".git").exists():
         print(f"reusing {checkout}")
@@ -328,8 +329,8 @@ def clone_or_fetch(repo: str, checkout: Path) -> Path:
         return checkout
     checkout.mkdir(parents=True, exist_ok=True)
     borrow = gitstore.reference(repo)
-    if borrow:
-        print(f"borrowing objects from {gitstore.mirror(repo)}")
+    print(f"cloning into {checkout}"
+          + (f", borrowing objects from {gitstore.mirror(repo)}" if borrow else ""))
     run_step(["gh", "repo", "clone", repo, ".", *(["--", *borrow] if borrow else [])],
              cwd=checkout)
     return checkout
@@ -357,6 +358,7 @@ def stage_pr(url: str):
     if not m:
         sys.exit(f"error: not a GitHub pull request URL: {url}")
     repo, number = f"{m.group(1)}/{m.group(2)}", m.group(3)
+    print(f"reading {repo}#{number}")
     author = gh_json("pr", "view", number, "--repo", repo, "--json", "author")["author"]["login"]
     mine = author == gh_json("api", "user")["login"]
     prompt = goal(
