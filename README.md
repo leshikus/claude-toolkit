@@ -13,9 +13,10 @@ log you walk afterward in a single review window.
 ## Use it
 
 ```bash
-./claude.py            # working session (auto mode) in the current directory
-./claude.py <pr-url>   # session on that pull request, checked out for you
-./claude.py --review   # one window over the writes log — review everything after the fact
+./claude.py             # working session (auto mode) in the current directory
+./claude.py "<task>"    # a new task: its own project, checkout and goal
+./claude.py <pr-url>    # session on that pull request, checked out for you
+./claude.py --review    # one window over the writes log — review everything after the fact
 
 python3 -m unittest discover tests   # unit tests
 ```
@@ -46,6 +47,20 @@ fixed already — a ClickHouse-sized clone is a lot to pay for that verdict. The
 opens in an empty directory of its own, on a goal met by showing whether it still
 reproduces, either way, with the evidence. The pull request comes
 after the verdict, and `./claude.py <pr-url>` then names its directory for the PR.
+
+A task given as prose has no pull request to be named for, so a model names it: the
+mechanical slug of a sentence is cut mid-word, and that name is the container, the
+project directory and the label on every monitor line for the session. It is sanitized
+to five hyphenated words host-side rather than trusted, and the first words of the task
+are the fallback — a launch must not fail because naming it did. A name already taken
+is suffixed rather than resumed: a prose task has no identity to match on the way a PR
+number does, and taking the project over would hand this task another one's container,
+queues and transcript. The checkout is `ClickHouse/ClickHouse` at its default branch
+unless `--repo owner/name` says otherwise, under `projects/<name>/repo` — the layout a
+PR gets, so once the session opens one, `./claude.py <pr-url>` finds this project
+through the claim the session-start hook records instead of cloning the repo again. The
+branch and the pull request are the session's to make, which is what the goal asks for:
+a pushed branch with a draft pull request open and its CI green.
 
 Relaunching a project takes it over. A container is named for its project, so the
 launch stops the one already running and resumes its session here, in the terminal you

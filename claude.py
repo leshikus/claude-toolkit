@@ -308,6 +308,54 @@ def stage_issue(m, url: str):
                       f"evidence for which")
 
 
+TASK_REPO = "ClickHouse/ClickHouse"  # a task names no repo, and nearly every one is here
+
+
+def task_project(text: str) -> str:
+    """A project name for a task given as prose, unique among the existing projects.
+
+    Named by a model: the mechanical slug of a sentence is cut mid-word or too long to
+    read, and this name is the container's, the project directory's and the label on
+    every monitor line for the session. The answer is sanitized to the same five-word
+    shape as the fallback rather than trusted, and the fallback is the first words --
+    a launch must not fail because a model call did.
+
+    A prose task has no identity to match on the way a PR number does, so a name
+    already taken is suffixed rather than resumed: taking the project over would hand
+    this task another one's container, queues and transcript.
+    """
+    name = "-".join(re.sub(r"[^a-z0-9]+", " ", text.lower()).split()[:5])
+    try:
+        out = subprocess.run(
+            ["claude", "-p", "--model", "haiku"],
+            input="Name this task, 3 to 5 lowercase words joined by hyphens, nothing "
+                  f"else:\n{text}",
+            capture_output=True, text=True, timeout=60, cwd=str(REPO_DIR))
+        if out.returncode == 0:
+            named = re.sub(r"[^a-z0-9]+", "-", out.stdout.strip().lower()).strip("-")
+            name = "-".join(named.split("-")[:5]) or name
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    unique, n = name, 1
+    while (APP_DIR / "projects" / unique).exists():
+        n += 1
+        unique = f"{name}-{n}"
+    return unique
+
+
+def stage_task(text: str, repo: str):
+    """(a checkout, the opening prompt) for a task given as prose, with no PR yet.
+
+    `repo` at its default branch, under projects/<name>/repo -- the layout a PR gets,
+    so once the session opens one, `claude.py <pr-url>` finds this project through the
+    claim session_start records instead of cloning the repo a second time. The branch
+    is the session's to make: a task is not a PR until it has something to show.
+    """
+    checkout = clone_or_fetch(repo, APP_DIR / "projects" / task_project(text) / "repo")
+    return checkout, goal(f"{text} -- committed on a branch of its own and pushed, with "
+                          f"a draft pull request open for it and its CI green")
+
+
 def clone_or_fetch(repo: str, checkout: Path) -> Path:
     """Clone `repo` into `checkout`, or bring an existing clone forward. Returns it.
 
@@ -455,9 +503,22 @@ def pull_toolkit() -> None:
 def main() -> None:
     review_mode = "--review" in sys.argv[1:]
     claude_args = [a for a in sys.argv[1:] if a != "--review"]
+    repo = TASK_REPO
+    if "--repo" in claude_args:
+        i = claude_args.index("--repo")
+        if i + 1 == len(claude_args):
+            sys.exit("error: --repo takes owner/name")
+        repo = claude_args.pop(i + 1)
+        claude_args.pop(i)
     pr_url = next((a for a in claude_args if a.startswith("http")), None)
     if pr_url:
         claude_args.remove(pr_url)
+    # A task is the first argument, where a URL may be any of them: everything after it
+    # is claude's own, and a flag value there must not be read as a task.
+    task = (claude_args[0] if not pr_url and claude_args
+            and not claude_args[0].startswith("-") else None)
+    if task:
+        claude_args.remove(task)
 
     pull_toolkit()
     APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -466,10 +527,10 @@ def main() -> None:
     # host monitor). The whole dir is mounted at the container's
     # ~/.config/claude-toolkit/project, so the hooks need no project logic. Create the
     # queue dirs so the bind mount attaches real dirs, not new root-owned ones.
-    # A PR URL brings its own checkout and opening prompt; otherwise the session works
-    # in whatever directory it was launched from.
-    if pr_url:
-        cwd, prompt = stage_url(pr_url)
+    # A PR URL and a prose task each bring their own checkout and opening prompt;
+    # with neither, the session works in whatever directory it was launched from.
+    if pr_url or task:
+        cwd, prompt = stage_url(pr_url) if pr_url else stage_task(task, repo)
         claude_args.append(prompt)
     else:
         cwd = Path.cwd()

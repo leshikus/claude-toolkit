@@ -284,3 +284,60 @@ class ClaudeJsonTest(unittest.TestCase):
         d.mkdir(parents=True)
         (d / "claude.json").write_text("")
         self.assertEqual(claude.read_json(claude.stage_claude_json(d))["userID"], "u")
+
+
+class StageTaskTest(unittest.TestCase):
+    """`claude.py "<task>"`: a task with no pull request yet brings its own checkout."""
+
+    def setUp(self):
+        self.app = Path(tempfile.mkdtemp())
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(claude, "APP_DIR", self.app).start()
+        self.ran = []
+        mock.patch.object(claude, "run_step",
+                          side_effect=lambda argv, cwd=None, fatal=True:
+                          self.ran.append(argv[:3])).start()
+        mock.patch.object(claude.gitstore, "refresh", return_value="fetched").start()
+        mock.patch.object(claude.gitstore, "reference", return_value=[]).start()
+        mock.patch.object(claude.gitstore, "mirror",
+                          side_effect=lambda repo: Path("/store") / repo).start()
+        # The name comes from a headless `claude`, which a unit test must not run.
+        self.named = mock.Mock(returncode=0, stdout="Darwin ARM test skips\n")
+        mock.patch.object(claude.subprocess, "run",
+                          side_effect=lambda *a, **k: self.named).start()
+
+    def test_the_model_names_the_project(self):
+        checkout, _ = claude.stage_task("skip more tests on Darwin ARM", "o/r")
+        self.assertEqual(checkout, self.app / "projects" / "darwin-arm-test-skips" / "repo")
+
+    def test_a_model_that_answers_with_prose_is_cut_to_five_words(self):
+        self.named.stdout = "This task is about skipping some Darwin tests"
+        self.assertEqual(claude.task_project("x"), "this-task-is-about-skipping")
+
+    def test_a_failed_model_call_falls_back_to_the_first_words(self):
+        """A launch must not fail because naming it did."""
+        self.named.returncode = 1
+        self.assertEqual(claude.task_project("Skip more tests on Darwin ARM, please"),
+                         "skip-more-tests-on-darwin")
+
+    def test_a_timeout_is_not_fatal_either(self):
+        with mock.patch.object(claude.subprocess, "run",
+                               side_effect=claude.subprocess.TimeoutExpired("claude", 60)):
+            self.assertEqual(claude.task_project("fix the sync job"), "fix-the-sync-job")
+
+    def test_a_name_already_taken_is_suffixed_rather_than_taken_over(self):
+        """Two tasks sharing a project share its container, queues and transcript."""
+        (self.app / "projects" / "darwin-arm-test-skips").mkdir(parents=True)
+        self.assertEqual(claude.task_project("anything"), "darwin-arm-test-skips-2")
+
+    def test_the_default_branch_is_cloned_and_no_pr_checked_out(self):
+        """The branch and the pull request are the session's to make."""
+        claude.stage_task("fix the sync job", "ClickHouse/clickhouse-private")
+        self.assertEqual(self.ran, [["gh", "repo", "clone"]])
+
+    def test_the_goal_is_a_pushed_branch_and_a_draft_pr(self):
+        prompt = claude.stage_task("skip more tests on Darwin ARM", "o/r")[1]
+        self.assertTrue(prompt.startswith("/goal "))
+        self.assertIn("skip more tests on Darwin ARM", prompt)
+        self.assertIn("draft pull request", prompt)
+        self.assertIn("CI green", prompt)
