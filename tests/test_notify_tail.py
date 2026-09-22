@@ -3,6 +3,7 @@
 
 import importlib.util
 import io
+import os
 import tempfile
 import time
 import unittest
@@ -28,9 +29,25 @@ class NotifyTailTest(unittest.TestCase):
         self.hook.STATE_FILE = self.state
         self.hint = app / "project" / "hint.md"
         self.hook.HINT_FILE = self.hint
+        self.meta = app / "project" / "meta.json"
+        self.hook.META_FILE = self.meta
+        # The hook asks `gh` for the branch's PR; a fake one that says nothing keeps
+        # every other test off the network. fake_gh() gives it an answer.
+        self.bin = home / "bin"
+        self.bin.mkdir()
+        self.fake_gh("exit 1")
+        self.path = os.environ["PATH"]
+        os.environ["PATH"] = f"{self.bin}:{self.path}"
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", self.path))
         self.interval = app / "config" / "notify-interval"
         self.interval.parent.mkdir()
         self.hook.INTERVAL_FILE = self.interval
+
+    def fake_gh(self, body: str) -> None:
+        """Put a `gh` on PATH whose body is `body`."""
+        gh = self.bin / "gh"
+        gh.write_text(f"#!/bin/sh\n{body}\n")
+        gh.chmod(0o755)
 
     def run_hook(self) -> str:
         """What the hook shows the reader; "" when it stays quiet."""
@@ -89,6 +106,43 @@ class NotifyTailTest(unittest.TestCase):
         self.picks.write_text("oldest — A (https://x/1)\nhighest — B (https://x/2)\n")
         out = self.run_hook()
         self.assertIn("backlog\n  oldest — A\n      https://x/1\n  highest — B\n      https://x/2", out)
+
+    def test_the_branchs_pr_prints_above_the_picks(self):
+        self.fake_gh('echo \'{"title": "C", "url": "https://x/9"}\'')
+        self.picks.write_text("oldest — A (https://x/1)\n")
+        self.assertIn("backlog\n  current pr — C\n      https://x/9\n  oldest — A",
+                      self.run_hook())
+
+    def test_the_pr_alone_is_enough_for_the_section(self):
+        self.fake_gh('echo \'{"title": "C", "url": "https://x/9"}\'')
+        self.assertIn("backlog\n  current pr — C\n      https://x/9", self.run_hook())
+
+    def test_the_claim_follows_the_branch_up_a_stack(self):
+        """The monitor routes by this claim; the PR the console started on is not it."""
+        self.meta.write_text('{"host_dir": "/x", "pr": {"key": "o/r#1"}}')
+        self.fake_gh('echo \'{"title": "C", "url": "https://github.com/o/r/pull/2"}\'')
+        self.run_hook()
+        self.assertEqual(self.hook.json.loads(self.meta.read_text())["pr"],
+                         {"key": "o/r#2", "repo": "o/r", "number": 2,
+                          "url": "https://github.com/o/r/pull/2", "title": "C"})
+
+    def test_a_branch_without_a_pr_keeps_the_claim(self):
+        """`gh` failing is not evidence the PR went away; only a different PR is."""
+        self.meta.write_text('{"pr": {"key": "o/r#1"}}')
+        self.run_hook()
+        self.assertEqual(self.hook.json.loads(self.meta.read_text())["pr"], {"key": "o/r#1"})
+
+    def test_a_branch_without_a_pr_adds_nothing(self):
+        self.picks.write_text("oldest — A (https://x/1)\n")
+        out = self.run_hook()
+        self.assertNotIn("current pr", out)
+        self.assertIn("backlog\n  oldest — A", out)
+
+    def test_a_hung_gh_does_not_hold_the_prompt(self):
+        self.hook.GH_TIMEOUT = 0.2
+        self.fake_gh("sleep 5")
+        self.picks.write_text("oldest — A (https://x/1)\n")
+        self.assertIn("backlog\n  oldest — A", self.run_hook())
 
     def test_a_changed_pick_speaks_even_though_the_log_is_quiet(self):
         self.log.write_text("first\n")

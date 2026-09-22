@@ -162,12 +162,21 @@ test, so there is never a reason to stretch it. Each line carries the action rat
 is one that only you can move, so naming it without saying what it needs leaves out the
 point of picking it.
 
+The first line is the pull request of the branch the checkout is on, asked of `gh` each
+time the hook speaks: the picks below it are what the session is *not* working on. The
+`meta.json` claim is not the answer — it names the PR the console was launched on, so a
+stacked follow-up leaves it pointing at the parent. The resolved PR is written back over
+that claim, so the monitor routes the follow-up's updates to this console rather than
+treating it as a PR nobody works on.
+
 They are state, not history: the picks overwrite `backlog-picks.txt` rather than adding
 three more lines to the stream every cycle, and are reprinted whole each time the hook
 speaks.
 
 ```
 backlog
+  current pr — <pr title>
+      https://github.com/<owner>/<repo>/pull/2345
   oldest — <issue title>: nobody picked it up in three years
       https://github.com/<owner>/<repo>/issues/1234
   newest — <pr title>: a reviewer asked a question 20 minutes ago
