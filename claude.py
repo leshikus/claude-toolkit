@@ -251,6 +251,7 @@ def read_json(path: Path) -> dict:
 
 PR_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)")
 ISSUE_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)")
+REPO_URL = re.compile(r"^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$")
 
 
 def gh_json(*args) -> dict:
@@ -277,17 +278,20 @@ def goal(condition: str) -> str:
 
 
 def stage_url(url: str):
-    """(checkout, opening prompt) for a pull request or issue URL.
+    """(checkout, opening prompt) for a pull request, issue or repository URL.
 
-    A pull request brings its checkout; an issue brings nothing, because establishing
-    whether it still reproduces does not need one.
+    A pull request and a repository each bring a checkout; an issue brings nothing,
+    because establishing whether it still reproduces does not need one.
     """
     if PR_URL.match(url):
         return stage_pr(url)
     m = ISSUE_URL.match(url)
+    if m:
+        return stage_issue(m, url)
+    m = REPO_URL.match(url)
     if not m:
-        sys.exit(f"error: not a GitHub pull request or issue URL: {url}")
-    return stage_issue(m, url)
+        sys.exit(f"error: not a GitHub pull request, issue or repository URL: {url}")
+    return stage_repo(m, url)
 
 
 def stage_issue(m, url: str):
@@ -306,6 +310,29 @@ def stage_issue(m, url: str):
     work.mkdir(parents=True, exist_ok=True)
     return work, goal(f"{url} is shown either to still reproduce or not to, with the "
                       f"evidence for which")
+
+
+def stage_repo(m, url: str):
+    """(a checkout of the repository, the opening prompt) for a bare repository URL.
+
+    A repository names no work, so finding some is the work: the session reads the
+    repository and its open issues and pull requests and proposes what to do next.
+    The goal stops there, at a proposal, because which step is worth taking is the
+    user's call -- a session that picked one itself would be answering its own question.
+
+    Its project is the repository name, so relaunching on the same URL takes the
+    project over rather than cloning beside it, and the checkout is at projects/<name>/
+    repo, the layout a PR gets: the pull request this session opens later resolves back
+    here through the claim session_start records.
+    """
+    repo = f"{m.group(1)}/{m.group(2)}"
+    checkout = clone_or_fetch(
+        repo, APP_DIR / "projects" / re.sub(r"[^a-zA-Z0-9_.-]", "-", m.group(2)) / "repo")
+    return checkout, goal(
+        f"the next step to take in {url} is proposed to me -- one step, drawn from the "
+        f"checkout and the repository's open issues and pull requests, with the "
+        f"evidence for why it is the next one -- and nothing is committed, pushed or "
+        f"posted before I choose it")
 
 
 TASK_REPO = "ClickHouse/ClickHouse"  # a task names no repo, and nearly every one is here
@@ -510,12 +537,12 @@ def main() -> None:
             sys.exit("error: --repo takes owner/name")
         repo = claude_args.pop(i + 1)
         claude_args.pop(i)
-    pr_url = next((a for a in claude_args if a.startswith("http")), None)
-    if pr_url:
-        claude_args.remove(pr_url)
+    url = next((a for a in claude_args if a.startswith("http")), None)
+    if url:
+        claude_args.remove(url)
     # A task is the first argument, where a URL may be any of them: everything after it
     # is claude's own, and a flag value there must not be read as a task.
-    task = (claude_args[0] if not pr_url and claude_args
+    task = (claude_args[0] if not url and claude_args
             and not claude_args[0].startswith("-") else None)
     if task:
         claude_args.remove(task)
@@ -527,10 +554,10 @@ def main() -> None:
     # host monitor). The whole dir is mounted at the container's
     # ~/.config/claude-toolkit/project, so the hooks need no project logic. Create the
     # queue dirs so the bind mount attaches real dirs, not new root-owned ones.
-    # A PR URL and a prose task each bring their own checkout and opening prompt;
+    # A URL and a prose task each bring their own checkout and opening prompt;
     # with neither, the session works in whatever directory it was launched from.
-    if pr_url or task:
-        cwd, prompt = stage_url(pr_url) if pr_url else stage_task(task, repo)
+    if url or task:
+        cwd, prompt = stage_url(url) if url else stage_task(task, repo)
         claude_args.append(prompt)
     else:
         cwd = Path.cwd()

@@ -216,10 +216,10 @@ class StageIssueTest(unittest.TestCase):
                           side_effect=lambda argv, cwd=None, fatal=True:
                           self.ran.append(argv)).start()
 
-    def test_an_unsupported_url_names_both_kinds(self):
+    def test_an_unsupported_url_names_every_kind(self):
         with self.assertRaises(SystemExit) as e:
             claude.stage_url("https://github.com/ClickHouse/ClickHouse/commit/abc1234")
-        self.assertIn("pull request or issue URL", str(e.exception))
+        self.assertIn("pull request, issue or repository URL", str(e.exception))
 
     def test_nothing_is_cloned_and_nothing_is_pushed(self):
         claude.stage_url(self.ISSUE)
@@ -236,6 +236,50 @@ class StageIssueTest(unittest.TestCase):
         work, _ = claude.stage_url(self.ISSUE)
         self.assertEqual(work, self.app / "projects" / "ClickHouse-issue-92886" / "work")
         self.assertTrue(work.is_dir())
+
+
+class StageRepoTest(unittest.TestCase):
+    """A repository names no work, so the session's first job is to propose some."""
+
+    REPO = "https://github.com/ClickHouse/ClickHouse"
+
+    def setUp(self):
+        self.app = Path(tempfile.mkdtemp())
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(claude, "APP_DIR", self.app).start()
+        self.ran = []
+        mock.patch.object(claude, "run_step",
+                          side_effect=lambda argv, cwd=None, fatal=True:
+                          self.ran.append(argv[:3])).start()
+        # The store reaches GitHub; a unit test must never make it do so.
+        mock.patch.object(claude.gitstore, "refresh", side_effect=lambda repo: "").start()
+        mock.patch.object(claude.gitstore, "reference", side_effect=lambda repo: []).start()
+        mock.patch.object(claude.gitstore, "mirror",
+                          side_effect=lambda repo: Path("/store") / repo).start()
+
+    def test_the_repository_is_cloned_into_a_project_of_its_own(self):
+        checkout, _ = claude.stage_url(self.REPO)
+        self.assertEqual(checkout, self.app / "projects" / "ClickHouse" / "repo")
+        self.assertEqual(self.ran, [["gh", "repo", "clone"]])
+
+    def test_a_trailing_slash_or_git_suffix_is_the_same_repository(self):
+        first = claude.stage_url(self.REPO)[0]
+        for variant in (self.REPO + "/", self.REPO + ".git"):
+            self.assertEqual(claude.stage_url(variant)[0], first)
+
+    def test_the_goal_is_met_by_a_proposal_not_by_taking_the_step(self):
+        prompt = claude.stage_url(self.REPO)[1]
+        self.assertTrue(prompt.startswith("/goal "))
+        self.assertIn("next step", prompt)
+        self.assertIn("proposed to me", prompt)
+        self.assertIn("nothing is committed, pushed or posted", prompt)
+        self.assertIn(self.REPO, prompt)
+
+    def test_a_pr_url_is_not_read_as_its_repository(self):
+        """PR_URL wins: a repository checkout would drop the PR the launch named."""
+        with mock.patch.object(claude, "stage_pr", return_value=("c", "p")) as staged:
+            self.assertEqual(claude.stage_url(URL), ("c", "p"))
+        staged.assert_called_once_with(URL)
 
 
 class ClaudeJsonTest(unittest.TestCase):

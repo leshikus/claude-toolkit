@@ -16,6 +16,7 @@ log you walk afterward in a single review window.
 ./claude.py             # working session (auto mode) in the current directory
 ./claude.py "<task>"    # a new task: its own project, checkout and goal
 ./claude.py <pr-url>    # session on that pull request, checked out for you
+./claude.py <repo-url>  # clone it and propose the next step to take there
 ./claude.py --review    # one window over the writes log — review everything after the fact
 
 python3 -m unittest discover tests   # unit tests
@@ -47,6 +48,14 @@ fixed already — a ClickHouse-sized clone is a lot to pay for that verdict. The
 opens in an empty directory of its own, on a goal met by showing whether it still
 reproduces, either way, with the evidence. The pull request comes
 after the verdict, and `./claude.py <pr-url>` then names its directory for the PR.
+
+A repository URL clones the repository and nothing more is known: it names no work, so
+finding some is the work. The session reads the checkout and the repository's open
+issues and pull requests and proposes one next step with the evidence for why it is the
+next one, and the goal stops there — which step is worth taking is yours to choose, and
+a session that picked one itself would be answering its own question. The project is
+the repository name, so relaunching on the same URL takes it over instead of cloning
+beside it.
 
 A task given as prose has no pull request to be named for, so a model names it: the
 mechanical slug of a sentence is cut mid-word, and that name is the container, the
