@@ -122,3 +122,12 @@ redundant with the code beside it and with the PR body:
 The `step()` function that followed it — a five-line helper — needed no comment at
 all. When in doubt, ship zero comments and let the code and the PR description carry
 the explanation.
+
+## When the goal is blocked on the user or an outside dependency
+
+A `Stop` hook that re-checks the goal is not user input. Once every part you control
+is done, the gated work is prepared, and you have named the blocker and the decision
+you need, say so once and wait. Do not repeat the status each time the hook runs, and
+do not apply, push, post or open anything the user has not approved to make the goal
+pass. An outside blocker, such as an expired repo-wide secret, cannot be fixed from
+the PR: save its cause to memory and report it.
