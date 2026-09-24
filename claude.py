@@ -562,6 +562,10 @@ def main() -> None:
     else:
         cwd = Path.cwd()
     projects_dir = APP_DIR / "projects"
+    # $HOME as the project would load the host's ~/.claude settings again as project settings.
+    if cwd == HOME:
+        cwd = projects_dir / "home" / "repo"
+        cwd.mkdir(parents=True, exist_ok=True)
     # A directory we made -- projects/<name>/repo for a PR, projects/<name>/work for an
     # issue -- holds its project state one level up, so the project is that parent
     # rather than the generic leaf. Any other cwd names its project by its own basename.
@@ -764,9 +768,6 @@ def main() -> None:
         # (see the write-eacces-mounted-settings note). In auto mode narrow allow rules
         # speed up routine reads; the classifier gates everything else.
         "-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:ro",
-        # Launched from $HOME, the host settings would load again as project settings.
-        *(["-v", f"{REPO_DIR}/.claude/settings.json:{workdir}/.claude/settings.json:ro"]
-          if cwd == HOME else []),
         "-v", f"{claude_json}:/home/ubuntu/.claude.json:rw",
         "-v", f"{HOME}/.gitconfig:/home/ubuntu/.gitconfig:ro",
         # Mount THIS project's own dir (projects/<name>/) at a fixed container path,
