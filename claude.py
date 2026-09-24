@@ -764,6 +764,9 @@ def main() -> None:
         # (see the write-eacces-mounted-settings note). In auto mode narrow allow rules
         # speed up routine reads; the classifier gates everything else.
         "-v", f"{REPO_DIR}/.claude/settings.json:/home/ubuntu/.claude/settings.json:ro",
+        # Launched from $HOME, the host settings would load again as project settings.
+        *(["-v", f"{REPO_DIR}/.claude/settings.json:{workdir}/.claude/settings.json:ro"]
+          if cwd == HOME else []),
         "-v", f"{claude_json}:/home/ubuntu/.claude.json:rw",
         "-v", f"{HOME}/.gitconfig:/home/ubuntu/.gitconfig:ro",
         # Mount THIS project's own dir (projects/<name>/) at a fixed container path,
