@@ -32,6 +32,8 @@ class BacklogPicksEventTest(unittest.TestCase):
         mock.patch.object(monitor, "_user_active", return_value=True).start()
         (tmp / "doc.md").write_text("pick the oldest")
         self.gh = mock.patch.object(monitor, "_gh_json", return_value={"title": TITLE}).start()
+        mock.patch.object(monitor, "_current_login", return_value="leshikus").start()
+        self.pr = mock.patch.object(monitor, "_is_own_approved_pr", return_value=True).start()
 
     def fire(self, answer, event=None) -> str:
         """Run one cycle against a model that returns `answer`; return the picks file."""
@@ -54,6 +56,13 @@ class BacklogPicksEventTest(unittest.TestCase):
         """`approved` is a fact about the PR; `easiest` was a judgment that misfired."""
         out = self.fire(f"approved: {HOT} — rebase and it can merge")
         self.assertIn(f"approved — {TITLE}: rebase and it can merge", out)
+
+    def test_approved_is_dropped_unless_github_confirms_it(self):
+        """The model once named another author's closed issue as the user's approved PR."""
+        self.pr.return_value = False
+        out = self.fire(f"highest: {OLD}\napproved: {HOT} — merge it")
+        self.assertIn("highest —", out)
+        self.assertNotIn("approved", out)
 
     def test_easiest_is_no_longer_a_label(self):
         self.assertEqual(self.fire(f"easiest: {HOT} — anything"), "")

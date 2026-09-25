@@ -1617,6 +1617,14 @@ def _picks(out: str) -> dict:
             for url, labels in found.items()}
 
 
+def _is_own_approved_pr(url: str, login: str) -> bool:
+    """Whether `url` is an open PR by `login` with an approving review -- the `approved` test."""
+    pr = _gh_json(["pr", "view", url, "--json", "author,state,latestReviews"]) or {}
+    return (bool(login) and (pr.get("author") or {}).get("login") == login
+            and pr.get("state") == "OPEN"
+            and any(r.get("state") == "APPROVED" for r in pr.get("latestReviews") or []))
+
+
 def _tracked_repos() -> list:
     """Every repo the projects have claimed a PR in, newest claim first.
 
@@ -1789,6 +1797,12 @@ class BacklogPicksEvent(Event):
                           f"retrying in {PICKS_RETRY // 60} min"])
             return
         picks = _picks(out)
+        login = _current_login()
+        for url, (labels, action) in list(picks.items()):
+            if "approved" in labels and not _is_own_approved_pr(url, login):
+                labels.remove("approved")
+                if not labels:
+                    del picks[url]
         _write_picks([f"{' + '.join(labels)} — {_item_link(url, action)}"
                       for url, (labels, action) in
                       sorted(picks.items(), key=lambda kv: PICKS.index(kv[1][0][0]))])
