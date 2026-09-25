@@ -107,11 +107,19 @@ class NotifyTailTest(unittest.TestCase):
         out = self.run_hook()
         self.assertIn("backlog\n  oldest — A\n      https://x/1\n  highest — B\n      https://x/2", out)
 
-    def test_the_branchs_pr_prints_above_the_picks(self):
+    def test_the_tail_then_the_picks_then_the_branchs_pr_last(self):
         self.fake_gh('echo \'{"title": "C", "url": "https://x/9"}\'')
+        self.log.write_text("first\n")
         self.picks.write_text("oldest — A (https://x/1)\n")
-        self.assertIn("backlog\n  current pr — C\n      https://x/9\n  oldest — A",
-                      self.run_hook())
+        self.assertEqual(self.run_hook().splitlines(),
+                         ["monitor — most recent last", "  first", "",
+                          "backlog", "  oldest — A", "      https://x/1",
+                          "  current pr — C", "      https://x/9"])
+
+    def test_a_checkout_on_no_prs_branch_shows_the_claim(self):
+        """A review of a merged PR whose branch is gone stays on the default branch."""
+        self.meta.write_text('{"pr": {"key": "o/r#1", "url": "https://github.com/o/r/pull/1"}}')
+        self.assertIn("backlog\n  current pr — https://github.com/o/r/pull/1\n", self.run_hook())
 
     def test_the_pr_alone_is_enough_for_the_section(self):
         self.fake_gh('echo \'{"title": "C", "url": "https://x/9"}\'')

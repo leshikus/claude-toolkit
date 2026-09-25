@@ -7,11 +7,13 @@ right now, and the one capability worth learning for the session in front of you
 overwritten every cycle -- and are reprinted whole. `notifications.log` is history -- CI results, PR
 activity, setup hints -- and only its tail is replayed.
 
-The PR the checkout is on is resolved from `gh` per print and shown above the picks,
-which are what this session is *not* working on. Not from the `meta.json` claim
-`session_start.py` recorded: that names the PR the console was launched on and is wrong
-from the moment the agent moves to the next PR in a stack -- so the resolved PR is
-written back over that claim, which is what the monitor routes PR updates by.
+Printed tail first, then the tutorial, then the picks, and last the PR the checkout is
+on -- what this session *is* working on, below what it is not. That PR is resolved from
+`gh` per print, not from the `meta.json` claim, which names the PR the console was
+launched on and is wrong from the moment the agent moves up a stack -- so the resolved
+PR is written back over that claim, which is what the monitor routes PR updates by. A
+checkout on no PR's branch, such as a review of a merged PR whose branch is gone, falls
+back to the claim.
 
 The reader sees them as the console's `systemMessage`; the session is handed the same
 text as `additionalContext`.
@@ -114,6 +116,15 @@ def branch_pr() -> dict:
     return pr if pr.get("url") else {}
 
 
+def meta() -> dict:
+    """This project's meta.json; {} if it is missing or not an object."""
+    try:
+        data = json.loads(META_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def claim(pr: dict) -> None:
     """Record `pr` as this project's claim in meta.json, replacing the launch claim.
 
@@ -125,16 +136,13 @@ def claim(pr: dict) -> None:
     if not m:
         return
     repo, number = m.group(1), int(m.group(2))
-    try:
-        meta = json.loads(META_FILE.read_text())
-    except (OSError, ValueError):
+    data = meta()
+    if not data or (data.get("pr") or {}).get("key") == f"{repo}#{number}":
         return
-    if not isinstance(meta, dict) or (meta.get("pr") or {}).get("key") == f"{repo}#{number}":
-        return
-    meta["pr"] = {"key": f"{repo}#{number}", "repo": repo, "number": number,
+    data["pr"] = {"key": f"{repo}#{number}", "repo": repo, "number": number,
                   "url": pr["url"], "title": pr.get("title")}
     try:
-        META_FILE.write_text(json.dumps(meta) + "\n")
+        META_FILE.write_text(json.dumps(data) + "\n")
     except OSError as exc:
         print(f"(could not write {META_FILE}: {exc})", file=sys.stderr)
 
@@ -163,7 +171,8 @@ def main() -> int:
 
     picks, hint, found = read(PICKS_FILE), read(HINT_FILE), branch_pr()
     claim(found)
-    pr = f"current pr — {found['title'] or found['url']} ({found['url']})" if found else ""
+    found = found or meta().get("pr") or {}
+    pr = f"current pr — {found.get('title') or found['url']} ({found['url']})" if found.get("url") else ""
     size, lines = tail()
     # != rather than >: a truncated or rotated log is movement too, and > would stay
     # quiet until the new file grew past the byte count of the old one.
@@ -176,14 +185,14 @@ def main() -> int:
         return "\n".join([header] + [r for line in body for r in rows(line)])
 
     sections = []
+    if lines and (fresh or not wait):
+        sections.append(block("monitor — most recent last", lines))
     if hint:
         # Printed whole, not through row(): it is prose about this session, not a list
         # of events, and it carries no URL to lift onto a row of its own.
         sections.append("try this\n" + "\n".join(ENTRY + l for l in hint.splitlines()))
     if pr or picks:
-        sections.append(block("backlog", ([pr] if pr else []) + picks.splitlines()))
-    if lines and (fresh or not wait):
-        sections.append(block("monitor — most recent last", lines))
+        sections.append(block("backlog", picks.splitlines() + ([pr] if pr else [])))
     if not sections:
         return 0
 

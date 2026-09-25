@@ -606,6 +606,12 @@ def main() -> None:
     except (OSError, ValueError):
         meta = {}
     meta["host_dir"] = str(cwd)
+    # session_start finds no PR for a merged PR whose branch is gone; claim the URL.
+    m = PR_URL.match(url or "")
+    if m and not meta.get("pr"):
+        repo_name, number = f"{m.group(1)}/{m.group(2)}", int(m.group(3))
+        meta["pr"] = {"key": f"{repo_name}#{number}", "repo": repo_name, "number": number,
+                      "url": url}
     meta_file.write_text(json.dumps(meta) + "\n")
 
     # One container per project, named for it, so this launch can take the project over

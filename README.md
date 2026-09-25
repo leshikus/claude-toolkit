@@ -162,10 +162,10 @@ test, so there is never a reason to stretch it. Each line carries the action rat
 is one that only you can move, so naming it without saying what it needs leaves out the
 point of picking it.
 
-The first line is the pull request of the branch the checkout is on, asked of `gh` each
-time the hook speaks: the picks below it are what the session is *not* working on. The
-`meta.json` claim is not the answer — it names the PR the console was launched on, so a
-stacked follow-up leaves it pointing at the parent. The resolved PR is written back over
+The last line is the pull request of the branch the checkout is on, asked of `gh` each
+time the hook speaks: the picks above it are what the session is *not* working on. The
+`meta.json` claim is only the fallback, for a checkout on no PR's branch — it names the
+PR the console was launched on, so a stacked follow-up leaves it pointing at the parent. The resolved PR is written back over
 that claim, so the monitor routes the follow-up's updates to this console rather than
 treating it as a PR nobody works on.
 
@@ -175,8 +175,6 @@ speaks.
 
 ```
 backlog
-  current pr — <pr title>
-      https://github.com/<owner>/<repo>/pull/2345
   oldest — <issue title>: nobody picked it up in three years
       https://github.com/<owner>/<repo>/issues/1234
   newest — <pr title>: a reviewer asked a question 20 minutes ago
@@ -185,6 +183,8 @@ backlog
       https://github.com/<owner>/<repo>/pull/5678
   approved — <pr title>: rebase and it can merge
       https://github.com/<owner>/<repo>/pull/9012
+  current pr — <pr title>
+      https://github.com/<owner>/<repo>/pull/2345
 ```
 
 What counts as waiting on *you* — a review requested of you, a thread nobody answered, an
