@@ -555,6 +555,21 @@ def run_step(argv: list, cwd=None, fatal: bool = True) -> None:
         print(f"warning: {step} failed -- opening the checkout as it stands", file=sys.stderr)
 
 
+def require_docker() -> None:
+    """Exit with the reason when the Docker engine cannot answer, rather than hang on it."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
+                           capture_output=True, text=True, timeout=20)
+    except FileNotFoundError:
+        sys.exit("error: docker not found -- install Docker Desktop")
+    except subprocess.TimeoutExpired:
+        sys.exit("error: the Docker engine did not answer in 20s -- Docker Desktop is "
+                 "starting or stuck; wait, or run `docker desktop restart`")
+    if r.returncode:
+        sys.exit(f"error: the Docker engine is unreachable -- run `docker desktop start`\n"
+                 f"{r.stderr.strip()}")
+
+
 def supersede(container: str) -> None:
     """Stop any container already running this project, so the newest launch owns it.
 
@@ -610,6 +625,7 @@ def main() -> None:
     if task:
         claude_args.remove(task)
 
+    require_docker()
     pull_toolkit()
     APP_DIR.mkdir(parents=True, exist_ok=True)
     # Per-project state lives under projects/<name>/: the pending-reads /
