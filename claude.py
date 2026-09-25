@@ -307,6 +307,7 @@ def stage_issue(m, url: str):
     """
     project = re.sub(r"[^a-zA-Z0-9_.-]", "-", f"{m.group(2)}-issue-{m.group(3)}")
     work = APP_DIR / "projects" / project / "work"
+    recycle(work.parent, None)
     work.mkdir(parents=True, exist_ok=True)
     return work, goal(f"{url} is shown either to still reproduce or not to, with the "
                       f"evidence for which")
@@ -396,11 +397,15 @@ def clone_or_fetch(repo: str, checkout: Path) -> Path:
     transfers every new object into its own store, and the sharing stops paying after
     the first clone.
     """
+    recycled = recycle(checkout.parent, repo)
     print(f"refreshing the mirror of {repo} in {gitstore.mirror(repo)}")
     gitstore.refresh(repo)
     if (checkout / ".git").exists():
         print(f"reusing {checkout}")
         run_step(["git", "fetch", "--prune", "origin"], cwd=checkout, fatal=False)
+        if recycled:
+            run_step(["git", "checkout", "--force", "--detach", "origin/HEAD"],
+                     cwd=checkout, fatal=False)
         return checkout
     checkout.mkdir(parents=True, exist_ok=True)
     borrow = gitstore.reference(repo)
@@ -409,6 +414,64 @@ def clone_or_fetch(repo: str, checkout: Path) -> Path:
     run_step(["gh", "repo", "clone", repo, ".", *(["--", *borrow] if borrow else [])],
              cwd=checkout)
     return checkout
+
+
+def knob(name: str, default: int) -> int:
+    """An integer from config/<name>, or `default` when the file is absent."""
+    try:
+        return int((APP_DIR / "config" / name).read_text())
+    except FileNotFoundError:
+        return default
+
+
+def last_touched(proj_dir: Path) -> float:
+    """The newest mtime among the project's own entries and its checkout's index."""
+    paths = [proj_dir, *proj_dir.iterdir(), proj_dir / "repo" / ".git" / "index"]
+    return max(p.stat().st_mtime for p in paths if p.exists())
+
+
+def recycle(proj_dir: Path, repo) -> bool:
+    """Make `proj_dir` out of the oldest idle checkout once there are max-checkouts of them.
+
+    A checkout of `repo` is kept and the rest of the old project -- its meta.json claim,
+    session, queues -- is dropped, so the new project inherits a working tree and
+    nothing else. Nothing idle for checkout-idle-days means a fresh directory, not a
+    refused launch. True when a directory was recycled.
+    """
+    projects_dir = proj_dir.parent
+    if proj_dir.exists() or not projects_dir.is_dir():
+        return False
+    checkouts = [d for d in projects_dir.iterdir() if d.name != "home"
+                 and ((d / "repo").is_dir() or (d / "work").is_dir())]
+    if len(checkouts) < knob("max-checkouts", 6):
+        return False
+    idle = time.time() - knob("checkout-idle-days", 2) * 86400
+    old = [d for d in sorted(checkouts, key=last_touched) if last_touched(d) < idle]
+    if not old:
+        print(f"warning: {len(checkouts)} checkouts and none idle; making a new one",
+              file=sys.stderr)
+        return False
+    victim = next((d for d in old if origin_is(d / "repo", repo)), old[0])
+    supersede(f"toolkit-{victim.name}")
+    print(f"recycling {victim} as {proj_dir}")
+    victim.rename(proj_dir)
+    for p in proj_dir.iterdir():
+        if p.name == "repo" and origin_is(p, repo):
+            continue
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    return True
+
+
+def origin_is(checkout: Path, repo) -> bool:
+    """True if `checkout` is a clone of `repo` (owner/name)."""
+    if not repo or not (checkout / ".git").exists():
+        return False
+    url = subprocess.run(["git", "-C", str(checkout), "remote", "get-url", "origin"],
+                         capture_output=True, text=True).stdout.strip()
+    return url.lower().removesuffix(".git").endswith(f"/{repo.lower()}")
 
 
 def stage_pr(url: str):
