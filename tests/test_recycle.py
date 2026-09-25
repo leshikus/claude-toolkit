@@ -44,7 +44,7 @@ class RecycleTest(unittest.TestCase):
         self.assertTrue((self.projects / "a").is_dir())
 
     def test_the_oldest_idle_checkout_of_the_repo_becomes_the_new_project(self):
-        for i in range(4):
+        for i in range(6):
             self.project(f"busy-{i}", "ClickHouse/ClickHouse", 1)
         self.project("other", "ClickHouse/clickhouse-private", 9)
         self.project("same", "ClickHouse/ClickHouse", 3)
@@ -56,7 +56,7 @@ class RecycleTest(unittest.TestCase):
         self.assertTrue((new / "repo" / ".git").is_dir())
 
     def test_another_repos_checkout_is_dropped_when_recycled(self):
-        for i in range(5):
+        for i in range(7):
             self.project(f"busy-{i}", "ClickHouse/ClickHouse", 1)
         self.project("other", "ClickHouse/clickhouse-private", 9)
         new = self.projects / "new"
@@ -64,10 +64,25 @@ class RecycleTest(unittest.TestCase):
         self.assertEqual(list(new.iterdir()), [])
 
     def test_nothing_idle_means_a_new_directory(self):
-        for i in range(6):
+        for i in range(8):
             self.project(f"busy-{i}", "ClickHouse/ClickHouse", 1)
         self.assertFalse(claude.recycle(self.projects / "new", "ClickHouse/ClickHouse"))
         self.assertEqual(self.stopped, [])
+
+    def test_the_excess_oldest_idle_lose_their_checkout_and_keep_their_session(self):
+        for i in range(6):
+            self.project(f"busy-{i}", "ClickHouse/ClickHouse", 1)
+        for i, days in enumerate([5, 7, 9]):
+            self.project(f"old-{i}", "ClickHouse/clickhouse-private", days)
+        self.project("same", "ClickHouse/ClickHouse", 3)
+        new = self.projects / "new"
+        self.assertTrue(claude.recycle(new, "ClickHouse/ClickHouse"))
+        self.assertEqual(self.stopped, ["toolkit-old-2", "toolkit-old-1", "toolkit-same"])
+        for name in ("old-1", "old-2"):
+            self.assertEqual([p.name for p in (self.projects / name).iterdir()],
+                             ["meta.json"])
+        self.assertTrue((self.projects / "old-0" / "repo").is_dir())
+        self.assertTrue((new / "repo" / ".git").is_dir())
 
 
 if __name__ == "__main__":

@@ -431,27 +431,36 @@ def last_touched(proj_dir: Path) -> float:
 
 
 def recycle(proj_dir: Path, repo) -> bool:
-    """Make `proj_dir` out of the oldest idle checkout once there are max-checkouts of them.
+    """Keep at most max-checkouts checkouts, `proj_dir` included, by reclaiming idle ones.
 
-    A checkout of `repo` is kept and the rest of the old project -- its meta.json claim,
-    session, queues -- is dropped, so the new project inherits a working tree and
-    nothing else. Nothing idle for checkout-idle-days means a fresh directory, not a
-    refused launch. True when a directory was recycled.
+    With N checkouts counting the new one, the N - max-checkouts oldest of those idle
+    for checkout-idle-days are reclaimed. One becomes `proj_dir`, preferring a checkout
+    of `repo`: its working tree is kept and the rest of the old project -- its meta.json
+    claim, session, queues -- is dropped. The others lose their `repo` and `work` dirs
+    and keep their session. Too few idle means more than max-checkouts, not a refused
+    launch. True when a directory was recycled.
     """
     projects_dir = proj_dir.parent
     if proj_dir.exists() or not projects_dir.is_dir():
         return False
     checkouts = [d for d in projects_dir.iterdir() if d.name != "home"
                  and ((d / "repo").is_dir() or (d / "work").is_dir())]
-    if len(checkouts) < knob("max-checkouts", 6):
+    excess = len(checkouts) + 1 - knob("max-checkouts", 8)
+    if excess <= 0:
         return False
     idle = time.time() - knob("checkout-idle-days", 2) * 86400
     old = [d for d in sorted(checkouts, key=last_touched) if last_touched(d) < idle]
+    if len(old) < excess:
+        print(f"warning: {len(checkouts)} checkouts and {len(old)} idle; keeping more "
+              f"than max-checkouts", file=sys.stderr)
     if not old:
-        print(f"warning: {len(checkouts)} checkouts and none idle; making a new one",
-              file=sys.stderr)
         return False
     victim = next((d for d in old if origin_is(d / "repo", repo)), old[0])
+    for d in [d for d in old if d != victim][:excess - 1]:
+        supersede(f"toolkit-{d.name}")
+        print(f"removing the checkout of {d}")
+        for sub in ("repo", "work"):
+            shutil.rmtree(d / sub, ignore_errors=True)
     supersede(f"toolkit-{victim.name}")
     print(f"recycling {victim} as {proj_dir}")
     victim.rename(proj_dir)
