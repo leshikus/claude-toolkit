@@ -108,7 +108,7 @@ def branch_pr() -> dict:
     yields {} rather than the wrong PR.
     """
     try:
-        proc = subprocess.run(["gh", "pr", "view", "--json", "title,url"],
+        proc = subprocess.run(["gh", "pr", "view", "--json", "title,url,reviewDecision"],
                               capture_output=True, text=True, timeout=GH_TIMEOUT)
         pr = json.loads(proc.stdout) if proc.returncode == 0 else {}
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -172,7 +172,8 @@ def main() -> int:
     picks, hint, found = read(PICKS_FILE), read(HINT_FILE), branch_pr()
     claim(found)
     found = found or meta().get("pr") or {}
-    pr = f"current pr — {found.get('title') or found['url']} ({found['url']})" if found.get("url") else ""
+    label = "current pr + approved" if found.get("reviewDecision") == "APPROVED" else "current pr"
+    pr = f"{label} — {found.get('title') or found['url']} ({found['url']})" if found.get("url") else ""
     size, lines = tail()
     # != rather than >: a truncated or rotated log is movement too, and > would stay
     # quiet until the new file grew past the byte count of the old one.

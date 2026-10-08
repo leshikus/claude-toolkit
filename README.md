@@ -194,7 +194,8 @@ makes the picks, run from this checkout so it loads the same always-loaded promp
 interactive session here would; those rules live there, and `.claude/modes/backlog-picks.md`
 supplies only the generic task. It answers with one labelled URL per line, and the titles
 are read back from GitHub so the link text cannot drift from what it points at. One item
-that is both prints once, as `oldest + highest`.
+that is both prints once, as `oldest + highest`; the current PR reads `current pr + approved`
+once GitHub reports its review decision as approved.
 
 The stream is a log, not a window: nothing tails it and no tab is opened for it. A
 `UserPromptSubmit` hook replays its tail into the session before the model starts on

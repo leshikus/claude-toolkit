@@ -116,6 +116,10 @@ class NotifyTailTest(unittest.TestCase):
                           "backlog", "  oldest — A", "      https://x/1",
                           "  current pr — C", "      https://x/9"])
 
+    def test_an_approved_pr_says_so(self):
+        self.fake_gh('echo \'{"title": "C", "url": "https://x/9", "reviewDecision": "APPROVED"}\'')
+        self.assertIn("backlog\n  current pr + approved — C\n      https://x/9", self.run_hook())
+
     def test_a_checkout_on_no_prs_branch_shows_the_claim(self):
         """A review of a merged PR whose branch is gone stays on the default branch."""
         self.meta.write_text('{"pr": {"key": "o/r#1", "url": "https://github.com/o/r/pull/1"}}')
