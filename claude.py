@@ -755,6 +755,7 @@ def main() -> None:
     session_start_script = "/home/ubuntu/.config/claude-toolkit/hooks/session_start.py"
     arm_monitor_script = "/home/ubuntu/.config/claude-toolkit/hooks/arm_monitor.py"
     notify_tail_script = "/home/ubuntu/.config/claude-toolkit/hooks/notify_tail.py"
+    status_recap_script = "/home/ubuntu/.config/claude-toolkit/hooks/status_recap.py"
     # Mount the current directory at the fixed /home/ubuntu/project and work there.
     # The container is project-agnostic: no repo name appears in any container path
     # (the name lives only host-side, under projects/<name>/). No ~/repos assumption;
@@ -819,6 +820,13 @@ def main() -> None:
                         {"type": "command", "command": f"python3 {capture_script}"},
                         {"type": "command", "command": f"python3 {arm_monitor_script}"},
                     ],
+                }
+            ],
+            # When a turn ends: status_recap makes a turn that used tools end with a
+            # status block, covering the monitor queues the model cannot see.
+            "Stop": [
+                {
+                    "hooks": [{"type": "command", "command": f"python3 {status_recap_script}"}],
                 }
             ],
         },

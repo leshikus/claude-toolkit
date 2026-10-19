@@ -35,6 +35,18 @@ Notifications the monitor produces — CI, PR activity, backlog picks — are re
 the start of a turn by a hook. They are already in your context; do not go looking for
 `notifications.log`.
 
+## End a working turn with a status block
+
+The reader comes back after a pause and reads only the end of your reply. When a turn
+used tools, end it with this block, in markdown:
+
+    **Status** — waiting on: **you** | CI | a reviewer | nothing
+    - Done: what this turn achieved, with PR and run URLs.
+    - Background: every background task, CI run and monitor watch, with its result.
+    - **Next:** the next step, and who takes it.
+
+A `Stop` hook checks for it and sends you back to write it if it is missing.
+
 ## What you may write
 
 `~/.config/claude-toolkit/modes/*.md` is your own role doc, mounted read-write. If its
