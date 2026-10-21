@@ -40,15 +40,14 @@ class StatusRecapTest(unittest.TestCase):
         self.hook = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.hook)
         self.hook.READS_DIR = self.dir / "pending-reads"
-        self.hook.WATCH_DIR = self.dir / "pending-monitoring"
         self.hook.READS_DIR.mkdir()
-        self.hook.WATCH_DIR.mkdir()
         self.transcript = self.dir / "t.jsonl"
 
-    def run_hook(self, records: list, active: bool = False) -> dict:
+    def run_hook(self, records: list, active: bool = False, last: str = "") -> dict:
         """The hook's decision; {} when it lets the turn stop."""
         self.transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-        event = {"transcript_path": str(self.transcript), "stop_hook_active": active}
+        event = {"transcript_path": str(self.transcript), "stop_hook_active": active,
+                 "last_assistant_message": last}
         out = io.StringIO()
         with mock.patch("sys.stdin", io.StringIO(json.dumps(event))), redirect_stdout(out):
             self.assertEqual(self.hook.main(), 0)
@@ -67,10 +66,11 @@ class StatusRecapTest(unittest.TestCase):
         self.assertIn("**Next:**", decision["reason"])
 
     def test_status_present_passes(self):
+        # The transcript does not yet hold the final message when the hook runs.
         self.assertEqual(self.run_hook([prompt("fix it", "2026-01-01T00:00:00Z"),
                                         tool_use("2026-01-01T00:00:01Z"),
-                                        say("Fixed.\n\n**Status** — waiting on: nothing",
-                                            "2026-01-01T00:00:03Z")]), {})
+                                        tool_result("2026-01-01T00:00:02Z")],
+                                       last="Fixed.\n\n**Status** — waiting on: nothing"), {})
 
     def test_tools_of_an_earlier_turn_do_not_count(self):
         self.assertEqual(self.run_hook([prompt("fix it", "2026-01-01T00:00:00Z"),
@@ -87,12 +87,10 @@ class StatusRecapTest(unittest.TestCase):
         old.write_text("x")
         os.utime(old, (0, 0))
         (self.hook.READS_DIR / "ci-status-new.md").write_text("x")
-        (self.hook.WATCH_DIR / "ci-abc.json").write_text("{}")
         reason = self.run_hook([prompt("push", "2026-01-01T00:00:00Z"),
                                 tool_use("2026-01-01T00:00:01Z")])["reason"]
         self.assertIn("ci-status-new.md", reason)
         self.assertNotIn("ci-status-old.md", reason)
-        self.assertIn("ci-abc.json", reason)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,6 @@ used tools, end it with this block, in markdown:
 
     **Status** — waiting on: **you** | CI | a reviewer | nothing
     - Done: what this turn achieved, with PR and run URLs.
-    - Background: every background task, CI run and monitor watch, with its result.
     - **Next:** the next step, and who takes it.
 
 A `Stop` hook checks for it and sends you back to write it if it is missing.
