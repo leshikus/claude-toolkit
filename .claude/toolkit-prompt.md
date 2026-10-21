@@ -42,7 +42,9 @@ used tools, end it with this block, in markdown:
 
     **Status** — waiting on: **you** | CI | a reviewer | nothing
     - Done: what this turn achieved, with PR and run URLs.
-    - **Next:** the next step, and who takes it.
+    - **Next:** one action, in full: who takes it, on what (with URL), and everything needed to
+      do it without earlier context. For a review comment, quote the comment and show the
+      suggested fix as a diff.
 
 A `Stop` hook checks for it and sends you back to write it if it is missing.
 
