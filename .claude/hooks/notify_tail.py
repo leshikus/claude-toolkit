@@ -4,7 +4,7 @@
 `backlog-picks.txt` and this project's `hint.md` are state, written by `monitor.py` on
 the host and invisible from inside the container, each overwritten every cycle and
 reprinted whole. Your open issues and PRs with news -- a comment from someone else within
-`ISSUE_DAYS`, or a finished CI run -- come from `gh` per print.
+`ISSUE_DAYS`, or a finished CI run -- come from `gh` per print, and each is shown once.
 
 Printed order: the issues, then the tutorial, then the picks, and last the PR the checkout
 is on -- what this session *is* working on, below what it is not. That PR is resolved from
@@ -199,7 +199,8 @@ def main() -> int:
     label = "current pr + approved" if found.get("reviewDecision") == "APPROVED" else "current pr"
     pr = f"{label} — {found.get('title') or found['url']} ({found['url']})" if found.get("url") else ""
     commented = issues()
-    if (wait and commented == state.get("issues", []) and picks == state.get("picks", "")
+    news = [n for n in commented if n not in state.get("issues", [])] if wait else commented
+    if (wait and not news and picks == state.get("picks", "")
             and hint == state.get("hint", "") and pr == state.get("pr", "")):
         return 0
 
@@ -207,8 +208,8 @@ def main() -> int:
         return "\n".join([header] + [r for line in body for r in rows(line)])
 
     sections = []
-    if commented:
-        sections.append(block("your issues and PRs", commented))
+    if news:
+        sections.append(block("your issues and PRs", news))
     if hint:
         # Printed whole, not through row(): it is prose about this session, not a list
         # of events, and it carries no URL to lift onto a row of its own.

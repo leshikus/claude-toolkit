@@ -81,6 +81,21 @@ class NotifyTailTest(unittest.TestCase):
                           "  B — CI passed", "      https://x/2"])
         self.assertEqual(self.run_hook(), "")
 
+    def test_an_item_already_shown_is_not_repeated_but_a_new_one_is(self):
+        self.fake_news()
+        self.run_hook()
+        self.interval.write_text("1\n")
+        state = self.hook.json.loads(self.state.read_text())
+        state["at"] = time.time() - 2
+        self.state.write_text(self.hook.json.dumps(state))
+        self.assertEqual(self.run_hook(), "")
+        state["at"] = time.time() - 2
+        state["issues"] = state["issues"][:1]
+        self.state.write_text(self.hook.json.dumps(state))
+        out = self.run_hook()
+        self.assertIn("B — CI passed", out)
+        self.assertNotIn("bob commented", out)
+
     def test_an_old_comment_is_not_news(self):
         self.fake_news(stamp="2020-01-01T00:00:00Z")
         self.assertNotIn("bob commented", self.run_hook())
