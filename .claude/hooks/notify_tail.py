@@ -111,6 +111,22 @@ def branch_pr() -> dict:
     return pr if pr.get("url") else {}
 
 
+def waiting(line: str) -> bool:
+    """False for a pick whose PR is merged, closed or enqueued; the picks file is minutes old."""
+    m = PR_URL.search(line)
+    if not m:
+        return True
+    try:
+        proc = subprocess.run(["gh", "pr", "view", m.group(0), "--json",
+                               "state,isInMergeQueue,autoMergeRequest"],
+                              capture_output=True, text=True, timeout=GH_TIMEOUT)
+        pr = json.loads(proc.stdout) if proc.returncode == 0 else {}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return True
+    return not pr or (pr.get("state") == "OPEN" and not pr.get("isInMergeQueue")
+                      and not pr.get("autoMergeRequest"))
+
+
 def meta() -> dict:
     """This project's meta.json; {} if it is missing or not an object."""
     try:
@@ -144,6 +160,7 @@ def claim(pr: dict) -> None:
 
 PICKS_QUERY = """{ viewer { pullRequests(first: 50, states: OPEN,
   orderBy: {field: CREATED_AT, direction: ASC}) { nodes { url title reviewDecision
+  isInMergeQueue autoMergeRequest { enabledAt }
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } } }
   search(query: "is:pr is:open review-requested:@me sort:created-asc", type: ISSUE, first: 1) {
   nodes { ... on PullRequest { url title } } } }"""
@@ -163,6 +180,8 @@ def targets() -> list:
     for pr in mine:
         rollup = ((pr["commits"]["nodes"] or [{}])[0].get("commit") or {}).get("statusCheckRollup")
         ci = (rollup or {}).get("state")
+        if pr["isInMergeQueue"] or pr["autoMergeRequest"]:
+            continue
         if pr["reviewDecision"] == "APPROVED":
             merge = merge or (pr, "CI " + ci.lower() if ci else "")
         elif pr["reviewDecision"] == "CHANGES_REQUESTED" or ci in ("FAILURE", "ERROR"):
@@ -184,7 +203,8 @@ def main() -> int:
     if wait and now - state.get("at", 0) < wait:
         return 0
 
-    picks, hint, found = read(PICKS_FILE), read(HINT_FILE), branch_pr()
+    picks = "\n".join(l for l in read(PICKS_FILE).splitlines() if waiting(l))
+    hint, found = read(HINT_FILE), branch_pr()
     claim(found)
     found = found or meta().get("pr") or {}
     label = "current pr + approved" if found.get("reviewDecision") == "APPROVED" else "current pr"

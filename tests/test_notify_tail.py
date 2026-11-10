@@ -65,11 +65,14 @@ class NotifyTailTest(unittest.TestCase):
 
     GQL = json.dumps({"data": {
         "viewer": {"pullRequests": {"nodes": [
-            {"url": "https://x/1", "title": "A", "reviewDecision": "APPROVED",
+            {"url": "https://x/1", "title": "A", "reviewDecision": "APPROVED", "isInMergeQueue": False,
+             "autoMergeRequest": None,
              "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}},
-            {"url": "https://x/2", "title": "B", "reviewDecision": None,
+            {"url": "https://x/2", "title": "B", "reviewDecision": None, "isInMergeQueue": False,
+             "autoMergeRequest": None,
              "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]}},
-            {"url": "https://x/3", "title": "C", "reviewDecision": "CHANGES_REQUESTED",
+            {"url": "https://x/3", "title": "C", "reviewDecision": "CHANGES_REQUESTED", "isInMergeQueue": False,
+             "autoMergeRequest": None,
              "commits": {"nodes": []}}]}},
         "search": {"nodes": [{"url": "https://x/4", "title": "D"}]}}})
 
@@ -86,6 +89,22 @@ class NotifyTailTest(unittest.TestCase):
                           "  fix — B — CI failed", "      https://x/2",
                           "  merge — A — CI success", "      https://x/1"])
         self.assertEqual(self.run_hook(), "")
+
+    def test_a_merged_or_enqueued_pick_is_not_listed(self):
+        self.fake_gh('case "$3" in *pull/1) echo \'{"state": "MERGED"}\';; '
+                     '*pull/2) echo \'{"state": "OPEN", "isInMergeQueue": true}\';; '
+                     '*) echo \'{"state": "OPEN"}\';; esac')
+        self.picks.write_text("approved — A (https://github.com/o/r/pull/1)\n"
+                              "approved — B (https://github.com/o/r/pull/2)\n"
+                              "oldest — C (https://github.com/o/r/pull/3)\n")
+        out = self.run_hook()
+        self.assertIn("oldest — C", out)
+        self.assertNotIn("— A", out)
+        self.assertNotIn("— B", out)
+
+    def test_an_enqueued_pr_is_not_the_merge_pick(self):
+        self.fake_todo(self.GQL.replace('"isInMergeQueue": false', '"isInMergeQueue": true', 1))
+        self.assertNotIn("merge", self.run_hook())
 
     def test_a_missing_kind_is_left_out(self):
         self.fake_todo(self.GQL.replace("APPROVED", "REVIEW_REQUIRED"))
