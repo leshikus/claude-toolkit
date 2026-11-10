@@ -18,13 +18,11 @@ class NotifyTailTest(unittest.TestCase):
         home = Path(tempfile.mkdtemp())
         app = home / ".config" / "claude-toolkit"
         (app / "project").mkdir(parents=True)
-        self.log = app / "notifications.log"
         self.picks = app / "backlog-picks.txt"
         self.state = app / "project" / "notify-tail.json"
         spec = importlib.util.spec_from_file_location("notify_tail", HOOK)
         self.hook = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.hook)
-        self.hook.NOTIFY_LOG = self.log
         self.hook.PICKS_FILE = self.picks
         self.hook.STATE_FILE = self.state
         self.hint = app / "project" / "hint.md"
@@ -64,27 +62,47 @@ class NotifyTailTest(unittest.TestCase):
         self.assertEqual(payload["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         return payload["systemMessage"]
 
-    def test_missing_log_is_silent(self):
+    GQL = ('{"data": {"viewer": {"login": "me", "issues": {"nodes": [{"url": "https://x/1", '
+           '"title": "A", "comments": {"nodes": [{"author": {"login": "%s"}, "createdAt": "%s"}]}}]}, '
+           '"pullRequests": {"nodes": [{"url": "https://x/2", "title": "B", "comments": {"nodes": []}, '
+           '"commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}]}}}}')
+
+    def fake_news(self, who="bob", stamp=None):
+        stamp = stamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.fake_gh(f"if [ \"$1\" = api ]; then cat <<'EOF'\n{self.GQL % (who, stamp)}\nEOF\nelse exit 1; fi")
+
+    def test_nothing_new_is_silent(self):
         self.assertEqual(self.run_hook(), "")
 
-    def test_prints_tail_then_throttles(self):
-        self.log.write_text("first\nsecond\n")
-        self.assertIn("second", self.run_hook())
-        self.log.write_text("first\nsecond\nthird\n")
+    def test_a_comment_and_a_finished_ci_run_are_shown_then_throttled(self):
+        self.fake_news()
+        self.assertEqual(self.run_hook().splitlines(),
+                         ["your issues and PRs", "  A — bob commented", "      https://x/1",
+                          "  B — CI passed", "      https://x/2"])
         self.assertEqual(self.run_hook(), "")
 
-    def test_reprints_only_when_the_log_grew(self):
-        self.log.write_text("first\n")
+    def test_an_old_comment_is_not_news(self):
+        self.fake_news(stamp="2020-01-01T00:00:00Z")
+        self.assertNotIn("bob commented", self.run_hook())
+
+    def test_your_own_comment_is_not_news(self):
+        self.fake_news(who="me")
+        self.assertNotIn("commented", self.run_hook())
+
+    def test_the_override_file_replaces_the_default_interval(self):
+        self.picks.write_text("oldest — A (https://x/1)\n")
         self.run_hook()
-        self.state.write_text('{"at": 1, "size": 6}')
+        self.picks.write_text("oldest — B (https://x/2)\n")
         self.assertEqual(self.run_hook(), "")
-        self.log.write_text("first\nsecond\n")
-        self.assertIn("second", self.run_hook())
+        self.interval.write_text("1\n")
+        self.state.write_text(self.hook.json.dumps({"at": time.time() - 2, "picks": "x"}))
+        self.assertIn("oldest — B", self.run_hook())
 
-    def test_tail_is_bounded(self):
-        self.log.write_text("".join(f"line {i}\n" for i in range(100)))
-        printed = [r.strip() for r in self.run_hook().splitlines()[1:]]
-        self.assertEqual(printed, [f"line {i}" for i in range(100 - self.hook.TAIL_LINES, 100)])
+    def test_zero_prints_on_every_prompt_with_the_gate_off(self):
+        self.interval.write_text("0")
+        self.picks.write_text("oldest — A (https://x/1)\n")
+        self.assertIn("oldest — A", self.run_hook())
+        self.assertIn("oldest — A", self.run_hook())
 
     def test_the_tutorial_prints_as_its_own_section_keeping_its_lines(self):
         """It is prose about this session, not a list of events to fold into rows."""
@@ -94,27 +112,17 @@ class NotifyTailTest(unittest.TestCase):
                          ["try this", "  ## /goal — keep going", "  what it does"])
 
     def test_a_new_tutorial_speaks_even_though_nothing_else_moved(self):
-        self.log.write_text("first\n")
-        self.run_hook()
-        self.state.write_text(self.hook.json.dumps(
-            {"at": 1, "size": 6, "picks": "", "hint": ""}))
-        self.assertEqual(self.run_hook(), "")
         self.hint.write_text("## /goal — keep going\n")
-        self.assertIn("## /goal", self.run_hook())
+        self.run_hook()
+        self.state.write_text(self.hook.json.dumps({"at": 1, "hint": "## /goal — keep going"}))
+        self.assertEqual(self.run_hook(), "")
+        self.hint.write_text("## /next\n")
+        self.assertIn("## /next", self.run_hook())
 
     def test_the_picks_print_as_their_own_section(self):
         self.picks.write_text("oldest — A (https://x/1)\nhighest — B (https://x/2)\n")
         out = self.run_hook()
         self.assertIn("backlog\n  oldest — A\n      https://x/1\n  highest — B\n      https://x/2", out)
-
-    def test_the_tail_then_the_picks_then_the_branchs_pr_last(self):
-        self.fake_gh('echo \'{"title": "C", "url": "https://x/9"}\'')
-        self.log.write_text("first\n")
-        self.picks.write_text("oldest — A (https://x/1)\n")
-        self.assertEqual(self.run_hook().splitlines(),
-                         ["monitor — most recent last", "  first", "",
-                          "backlog", "  oldest — A", "      https://x/1",
-                          "  current pr — C", "      https://x/9"])
 
     def test_an_approved_pr_says_so(self):
         self.fake_gh('echo \'{"title": "C", "url": "https://x/9", "reviewDecision": "APPROVED"}\'')
@@ -156,84 +164,9 @@ class NotifyTailTest(unittest.TestCase):
         self.picks.write_text("oldest — A (https://x/1)\n")
         self.assertIn("backlog\n  oldest — A", self.run_hook())
 
-    def test_a_changed_pick_speaks_even_though_the_log_is_quiet(self):
-        self.log.write_text("first\n")
-        self.picks.write_text("oldest — A (https://x/1)\n")
-        self.run_hook()
-        self.state.write_text(self.hook.json.dumps(
-            {"at": 1, "size": 6, "picks": "oldest — A (https://x/1)"}))
-        self.assertEqual(self.run_hook(), "")   # nothing moved
-        self.picks.write_text("oldest — B (https://x/2)\n")
-        self.assertIn("oldest — B\n      https://x/2", self.run_hook())
-
-    def test_the_picks_repeat_with_each_replay_rather_than_stacking_up(self):
-        """They are state: the current pair, not one line per selection cycle."""
-        self.picks.write_text("oldest — A (https://x/1)\n")
-        self.log.write_text("first\n")
-        first = self.run_hook()
-        self.state.write_text(self.hook.json.dumps({"at": 1, "size": 6, "picks": ""}))
-        self.log.write_text("first\nsecond\n")
-        second = self.run_hook()
-        for out in (first, second):
-            self.assertEqual(out.count("oldest — A\n      https://x/1"), 1)
-
-    def test_a_url_gets_a_row_to_itself(self):
-        self.log.write_text(
-            "2026-08-25 12:00:00  ~/repos/x — A title (https://github.com/o/r/pull/7)\n")
-        self.assertEqual(self.run_hook().splitlines()[1:],
-                         ["  12:00  ~/repos/x — A title",
-                          "      https://github.com/o/r/pull/7"])
-
-    def test_an_escape_the_monitor_already_wrote_is_flattened(self):
-        """The log still holds lines from when it emitted OSC 8; the console eats those."""
-        link = "\x1b]8;;https://github.com/o/r/pull/7\x1b\\A title\x1b]8;;\x1b\\"
-        self.log.write_text(f"2026-08-26 12:00:00  ~/repos/x — {link}\n")
-        self.assertEqual(self.run_hook().splitlines()[1:],
-                         ["  12:00  ~/repos/x — A title",
-                          "      https://github.com/o/r/pull/7"])
-
-    def test_a_line_without_a_url_stays_one_row(self):
-        self.log.write_text("2026-08-25 12:00:00  hint x — Install node\n")
-        self.assertEqual(self.run_hook().splitlines()[1:], ["  12:00  hint x — Install node"])
-
-    def test_the_date_and_seconds_are_dropped_from_the_stamp(self):
-        self.log.write_text("2026-08-25 09:07:42  hint x — y\n")
-        self.assertEqual(self.run_hook().splitlines()[1:], ["  09:07  hint x — y"])
-
-    def test_the_override_file_replaces_the_default_interval(self):
-        self.log.write_text("first\n")
-        self.run_hook()
-        self.log.write_text("first\nsecond\n")
-        self.assertEqual(self.run_hook(), "")      # inside the default 300 s
-        self.interval.write_text("1\n")
-        self.state.write_text(self.hook.json.dumps({"at": time.time() - 2, "size": 6}))
-        self.assertIn("second", self.run_hook())
-
-    def test_zero_prints_on_every_prompt_with_the_gates_off(self):
-        """Silence must mean the hook is dead, not that nothing moved."""
-        self.interval.write_text("0")
-        self.log.write_text("first\n")
-        self.assertIn("first", self.run_hook())
-        self.assertIn("first", self.run_hook())    # unchanged, no wait: still speaks
-
     def test_a_garbled_override_is_the_default_not_an_error(self):
         self.interval.write_text("every minute please")
         self.assertEqual(self.hook.interval(), self.hook.NOTIFY_INTERVAL)
-
-    def test_a_shrinking_log_counts_as_movement(self):
-        """Rotation must not mute the hook until the new file passes the old size."""
-        self.log.write_text("a\nb\nc\n")
-        self.run_hook()
-        self.state.write_text(self.hook.json.dumps({"at": 1, "size": 6}))
-        self.log.write_text("d\n")                # truncated: smaller, but new
-        self.assertIn("d", self.run_hook())
-
-    def test_stamp_records_the_size_it_printed(self):
-        self.log.write_text("first\n")
-        self.run_hook()
-        state = self.hook.json.loads(self.state.read_text())
-        self.assertEqual(state["size"], 6)
-        self.assertLess(time.time() - state["at"], 60)
 
 
 if __name__ == "__main__":
