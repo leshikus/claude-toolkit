@@ -198,9 +198,10 @@ that is both prints once, as `oldest + highest`; the current PR reads `current p
 once GitHub reports its review decision as approved.
 
 The stream is a log, not a window: nothing tails it and no tab is opened for it. A
-`UserPromptSubmit` hook does not replay it. It shows the picks, and your open issues and
-PRs with a new comment or a finished CI run, before the model starts on the turn — at
-most once every 5 minutes, and only when something changed since the last print. Silence and breakage look identical from the console, so the wait is
+`UserPromptSubmit` hook does not replay it. It shows the picks and three of yours — the oldest PR to
+review, the oldest to fix (changes requested or CI failed) and the oldest approved one to
+merge — before the model starts on the turn, at most once every 5 minutes and only when
+something changed since the last print. Silence and breakage look identical from the console, so the wait is
 readable and writable while the session runs:
 
 ```bash

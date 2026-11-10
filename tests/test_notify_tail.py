@@ -3,6 +3,7 @@
 
 import importlib.util
 import io
+import json
 import os
 import tempfile
 import time
@@ -62,47 +63,35 @@ class NotifyTailTest(unittest.TestCase):
         self.assertEqual(payload["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         return payload["systemMessage"]
 
-    GQL = ('{"data": {"viewer": {"login": "me", "issues": {"nodes": [{"url": "https://x/1", '
-           '"title": "A", "comments": {"nodes": [{"author": {"login": "%s"}, "createdAt": "%s"}]}}]}, '
-           '"pullRequests": {"nodes": [{"url": "https://x/2", "title": "B", "comments": {"nodes": []}, '
-           '"commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}]}}}}')
+    GQL = json.dumps({"data": {
+        "viewer": {"pullRequests": {"nodes": [
+            {"url": "https://x/1", "title": "A", "reviewDecision": "APPROVED",
+             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}},
+            {"url": "https://x/2", "title": "B", "reviewDecision": None,
+             "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "FAILURE"}}}]}},
+            {"url": "https://x/3", "title": "C", "reviewDecision": "CHANGES_REQUESTED",
+             "commits": {"nodes": []}}]}},
+        "search": {"nodes": [{"url": "https://x/4", "title": "D"}]}}})
 
-    def fake_news(self, who="bob", stamp=None):
-        stamp = stamp or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        self.fake_gh(f"if [ \"$1\" = api ]; then cat <<'EOF'\n{self.GQL % (who, stamp)}\nEOF\nelse exit 1; fi")
+    def fake_todo(self, body=None):
+        self.fake_gh(f"if [ \"$1\" = api ]; then cat <<'EOF'\n{body or self.GQL}\nEOF\nelse exit 1; fi")
 
-    def test_nothing_new_is_silent(self):
+    def test_nothing_to_do_is_silent(self):
         self.assertEqual(self.run_hook(), "")
 
-    def test_a_comment_and_a_finished_ci_run_are_shown_then_throttled(self):
-        self.fake_news()
+    def test_the_oldest_to_review_fix_and_merge_are_shown_then_throttled(self):
+        self.fake_todo()
         self.assertEqual(self.run_hook().splitlines(),
-                         ["your issues and PRs", "  A — bob commented", "      https://x/1",
-                          "  B — CI passed", "      https://x/2"])
+                         ["to do", "  review — D", "      https://x/4",
+                          "  fix — B — CI failed", "      https://x/2",
+                          "  merge — A — CI success", "      https://x/1"])
         self.assertEqual(self.run_hook(), "")
 
-    def test_an_item_already_shown_is_not_repeated_but_a_new_one_is(self):
-        self.fake_news()
-        self.run_hook()
-        self.interval.write_text("1\n")
-        state = self.hook.json.loads(self.state.read_text())
-        state["at"] = time.time() - 2
-        self.state.write_text(self.hook.json.dumps(state))
-        self.assertEqual(self.run_hook(), "")
-        state["at"] = time.time() - 2
-        state["issues"] = state["issues"][:1]
-        self.state.write_text(self.hook.json.dumps(state))
+    def test_a_missing_kind_is_left_out(self):
+        self.fake_todo(self.GQL.replace("APPROVED", "REVIEW_REQUIRED"))
         out = self.run_hook()
-        self.assertIn("B — CI passed", out)
-        self.assertNotIn("bob commented", out)
-
-    def test_an_old_comment_is_not_news(self):
-        self.fake_news(stamp="2020-01-01T00:00:00Z")
-        self.assertNotIn("bob commented", self.run_hook())
-
-    def test_your_own_comment_is_not_news(self):
-        self.fake_news(who="me")
-        self.assertNotIn("commented", self.run_hook())
+        self.assertNotIn("merge", out)
+        self.assertIn("fix — B", out)
 
     def test_the_override_file_replaces_the_default_interval(self):
         self.picks.write_text("oldest — A (https://x/1)\n")

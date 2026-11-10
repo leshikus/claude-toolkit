@@ -791,8 +791,8 @@ def main() -> None:
                     "hooks": [{"type": "command", "command": f"python3 {session_start_script}"}],
                 }
             ],
-            # At the start of a turn: show the backlog picks and news on your open
-            # issues and PRs. The hook throttles itself to one print per 5 minutes.
+            # At the start of a turn: show the backlog picks and the oldest PR to
+            # review, fix and merge. The hook throttles itself to one print per 5 minutes.
             "UserPromptSubmit": [
                 {
                     "hooks": [{"type": "command", "command": f"python3 {notify_tail_script}"}],

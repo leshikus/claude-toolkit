@@ -3,10 +3,10 @@
 
 `backlog-picks.txt` and this project's `hint.md` are state, written by `monitor.py` on
 the host and invisible from inside the container, each overwritten every cycle and
-reprinted whole. Your open issues and PRs with news -- a comment from someone else within
-`ISSUE_DAYS`, or a finished CI run -- come from `gh` per print, and each is shown once.
+reprinted whole. The oldest PR to review, the oldest of yours to fix (changes requested or CI failed)
+and the oldest approved one to merge come from `gh` per print.
 
-Printed order: the issues, then the tutorial, then the picks, and last the PR the checkout
+Printed order: the to-do picks, then the tutorial, then the picks, and last the PR the checkout
 is on -- what this session *is* working on, below what it is not. That PR is resolved from
 `gh` per print, not from the `meta.json` claim, which names the PR the console was
 launched on and is wrong from the moment the agent moves up a stack -- so the resolved
@@ -32,7 +32,6 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CONFIG = Path(os.path.expanduser("~/.config/claude-toolkit"))
@@ -42,7 +41,6 @@ META_FILE = CONFIG / "project" / "meta.json"
 STATE_FILE = CONFIG / "project" / "notify-tail.json"
 INTERVAL_FILE = CONFIG / "config" / "notify-interval"
 NOTIFY_INTERVAL = 300  # seconds between prints, when config/notify-interval says nothing
-ISSUE_DAYS = 3  # how recent the last comment on one of your issues must be
 GH_TIMEOUT = 10  # this runs on the prompt path; a hung `gh` must not hold the turn
 
 
@@ -144,42 +142,35 @@ def claim(pr: dict) -> None:
         print(f"(could not write {META_FILE}: {exc})", file=sys.stderr)
 
 
-ISSUES_QUERY = """{ viewer { login
-  issues(first: 20, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes {
-    url title comments(last: 1) { nodes { author { login } createdAt } } } }
-  pullRequests(first: 20, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) { nodes {
-    url title comments(last: 1) { nodes { author { login } createdAt } }
-    commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } } } }"""
-CI_WORDS = {"SUCCESS": "CI passed", "FAILURE": "CI failed", "ERROR": "CI errored"}
+PICKS_QUERY = """{ viewer { pullRequests(first: 50, states: OPEN,
+  orderBy: {field: CREATED_AT, direction: ASC}) { nodes { url title reviewDecision
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } } }
+  search(query: "is:pr is:open review-requested:@me sort:created-asc", type: ISSUE, first: 1) {
+  nodes { ... on PullRequest { url title } } } }"""
 
 
-def issues() -> list:
-    """Lines `title — what happened (url)` for your open issues and PRs with news.
-
-    News is a last comment that is not yours and is recent, or a finished CI run on a PR.
-    """
+def targets() -> list:
+    """The oldest PR to review, the oldest of yours to fix, the oldest approved one to merge."""
     try:
-        proc = subprocess.run(["gh", "api", "graphql", "-f", f"query={ISSUES_QUERY}"],
+        proc = subprocess.run(["gh", "api", "graphql", "-f", f"query={PICKS_QUERY}"],
                               capture_output=True, text=True, timeout=GH_TIMEOUT)
-        viewer = json.loads(proc.stdout)["data"]["viewer"] if proc.returncode == 0 else {}
+        data = json.loads(proc.stdout)["data"] if proc.returncode == 0 else {}
+        mine = data["viewer"]["pullRequests"]["nodes"]
+        review = data["search"]["nodes"]
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return []
-    since = (datetime.now(timezone.utc) - timedelta(days=ISSUE_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    out = []
-    for kind in ("issues", "pullRequests"):
-        for node in (viewer.get(kind) or {}).get("nodes") or []:
-            news = []
-            for c in node["comments"]["nodes"]:
-                who = (c.get("author") or {}).get("login")
-                if who != viewer["login"] and c["createdAt"] >= since:
-                    news.append(f"{who} commented")
-            for c in (node.get("commits") or {}).get("nodes") or []:
-                state = ((c["commit"] or {}).get("statusCheckRollup") or {}).get("state")
-                if state in CI_WORDS:
-                    news.append(CI_WORDS[state])
-            if news:
-                out.append(f"{node['title']} — {', '.join(news)} ({node['url']})")
-    return out
+    fix = merge = None
+    for pr in mine:
+        rollup = ((pr["commits"]["nodes"] or [{}])[0].get("commit") or {}).get("statusCheckRollup")
+        ci = (rollup or {}).get("state")
+        if pr["reviewDecision"] == "APPROVED":
+            merge = merge or (pr, "CI " + ci.lower() if ci else "")
+        elif pr["reviewDecision"] == "CHANGES_REQUESTED" or ci in ("FAILURE", "ERROR"):
+            why = "changes requested" if pr["reviewDecision"] == "CHANGES_REQUESTED" else "CI failed"
+            fix = fix or (pr, why)
+    picks = [("review", (review[0], "") if review else None), ("fix", fix), ("merge", merge)]
+    return [f"{label} — {pr['title']}{' — ' + why if why else ''} ({pr['url']})"
+            for label, found in picks if found for pr, why in [found]]
 
 
 def main() -> int:
@@ -198,9 +189,8 @@ def main() -> int:
     found = found or meta().get("pr") or {}
     label = "current pr + approved" if found.get("reviewDecision") == "APPROVED" else "current pr"
     pr = f"{label} — {found.get('title') or found['url']} ({found['url']})" if found.get("url") else ""
-    commented = issues()
-    news = [n for n in commented if n not in state.get("issues", [])] if wait else commented
-    if (wait and not news and picks == state.get("picks", "")
+    todo = targets()
+    if (wait and todo == state.get("todo", []) and picks == state.get("picks", "")
             and hint == state.get("hint", "") and pr == state.get("pr", "")):
         return 0
 
@@ -208,8 +198,8 @@ def main() -> int:
         return "\n".join([header] + [r for line in body for r in rows(line)])
 
     sections = []
-    if news:
-        sections.append(block("your issues and PRs", news))
+    if todo:
+        sections.append(block("to do", todo))
     if hint:
         # Printed whole, not through row(): it is prose about this session, not a list
         # of events, and it carries no URL to lift onto a row of its own.
@@ -221,7 +211,7 @@ def main() -> int:
 
     try:
         STATE_FILE.write_text(
-            json.dumps({"at": now, "issues": commented, "picks": picks,
+            json.dumps({"at": now, "todo": todo, "picks": picks,
                         "hint": hint, "pr": pr}) + "\n")
     except OSError as exc:
         print(f"(could not write {STATE_FILE}: {exc})", file=sys.stderr)
